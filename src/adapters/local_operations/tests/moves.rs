@@ -153,6 +153,49 @@ fn moving_a_directory_into_its_own_child_fails_instead_of_deleting_it() -> Resul
 }
 
 #[test]
+fn moving_a_directory_through_a_symlink_alias_is_rejected() -> Result<(), Box<dyn Error>> {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let root = tempfile::tempdir()?;
+    let docs = root.path().join("docs");
+    fs::create_dir_all(&docs)?;
+    fs::write(docs.join("top.txt"), b"top")?;
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&docs, &link)?;
+    let destination = link.join("Backup");
+    fs::create_dir_all(&destination)?;
+    let target = destination.join("docs");
+
+    let source_file = gio::File::for_path(&docs);
+    let destination_file = gio::File::for_path(&destination);
+    let target_file = gio::File::for_path(&target);
+    assert!(
+        !source_file.equal(&destination_file)
+            && !destination_file.has_prefix(&source_file)
+            && !source_file.equal(&target_file),
+        "alias must bypass the lexical guard for the regression to be meaningful"
+    );
+    assert!(
+        destination_is_within_source(&source_file, &destination_file),
+        "resolved guard must see link/Backup inside docs"
+    );
+
+    let result = glib::MainContext::default().block_on(move_local(
+        gio::File::for_path(&docs),
+        gio::File::for_path(&target),
+        gio::Cancellable::new(),
+        None,
+    ));
+
+    assert!(result.is_err());
+    assert!(docs.exists());
+    assert_eq!(fs::read(docs.join("top.txt"))?, b"top");
+    assert!(!target.exists());
+    Ok(())
+}
+
+#[test]
 fn move_accepts_a_symlink_in_the_sources_parent_path() -> Result<(), Box<dyn Error>> {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
