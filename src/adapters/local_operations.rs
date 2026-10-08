@@ -1011,52 +1011,38 @@ fn validated_child(parent: &gio::File, name: &str) -> Result<gio::File, &'static
 }
 
 fn transfer_is_noop(source: &gio::File, destination: &gio::File, target: &gio::File) -> bool {
-    if source.equal(target) || source.equal(destination) || destination.has_prefix(source) {
-        return true;
-    }
-    destination_is_within_source(source, destination)
-        || destination_is_within_source(source, target)
+    source.equal(target)
+        || source.equal(destination)
+        || destination.has_prefix(source)
+        || target_is_within_source(source, target) == Some(true)
 }
 
-/// Resolves `path` for ancestry comparison without requiring the final
-/// component to exist: canonicalizes the path itself when possible, else the
-/// nearest existing ancestor, then re-appends the remainder. Returns `None`
-/// when no ancestor can be resolved (e.g. non-absolute or permission failure).
-fn resolve_for_containment(path: &Path) -> Option<PathBuf> {
-    if !path.is_absolute() {
-        return None;
+/// Compares device/inode identities so symlink, bind-mount, and
+/// case-insensitive aliases of the source are caught. A symlink source keeps
+/// its own identity, so moving a link into the folder it targets is allowed.
+/// `None` means an ancestor could not be inspected.
+fn target_is_within_source(source: &gio::File, target: &gio::File) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let (Some(source_path), Some(target_path)) = (source.path(), target.path()) else {
+        return Some(false);
+    };
+    let identity = |metadata: &std::fs::Metadata| (metadata.dev(), metadata.ino());
+    let source_identity = identity(&std::fs::symlink_metadata(source_path).ok()?);
+    if std::fs::symlink_metadata(&target_path)
+        .is_ok_and(|metadata| identity(&metadata) == source_identity)
+    {
+        return Some(true);
     }
-    if let Ok(canonical) = std::fs::canonicalize(path) {
-        return Some(canonical);
-    }
-    for ancestor in path.ancestors().skip(1) {
-        if let Ok(canonical_ancestor) = std::fs::canonicalize(ancestor)
-            && let Ok(remainder) = path.strip_prefix(ancestor)
-        {
-            return Some(canonical_ancestor.join(remainder));
+    for ancestor in target_path.ancestors().skip(1) {
+        match std::fs::metadata(ancestor) {
+            Ok(metadata) if identity(&metadata) == source_identity => return Some(true),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
         }
     }
-    None
-}
-
-/// Whether `destination` resolves equal to or inside `source`.
-///
-/// Lexical `equal`/`has_prefix` miss symlink aliases
-/// (`docs` vs `link/Backup` where `link -> docs`), while the executor
-/// resolves them. Only meaningful for native paths; non-native returns
-/// `false` and keeps existing lexical behavior. Unresolvable native paths
-/// fail closed (`true`) so the move fallback rejects rather than guessing.
-fn destination_is_within_source(source: &gio::File, destination: &gio::File) -> bool {
-    let (Some(source_path), Some(dest_path)) = (source.path(), destination.path()) else {
-        return false;
-    };
-    let (Some(resolved_source), Some(resolved_dest)) = (
-        resolve_for_containment(&source_path),
-        resolve_for_containment(&dest_path),
-    ) else {
-        return true;
-    };
-    resolved_dest == resolved_source || resolved_dest.starts_with(&resolved_source)
+    Some(false)
 }
 
 pub(crate) fn transfer_source_name(source: &gio::File) -> Option<OsString> {
@@ -2239,8 +2225,10 @@ async fn move_local_with_progress(
     let result = attempt_move(source.clone(), target.clone(), cancellable.clone()).await;
     match result {
         Err(error) if error.matches(gio::IOErrorEnum::WouldRecurse) => {
-            if destination_is_within_source(&source, &target) {
-                return Err(io_error("Cannot move a folder inside itself"));
+            if target_is_within_source(&source, &target) != Some(false) {
+                return Err(io_error(crate::i18n::tr(
+                    "Can\u{2019}t put a folder inside itself",
+                )));
             }
             copy_new_recursively_with_progress(
                 source.clone(),
