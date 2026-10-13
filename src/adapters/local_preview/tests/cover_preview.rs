@@ -52,6 +52,7 @@ fn comic_and_epub_requests_render_covers_instead_of_archive_trees() {
                 media_size: MediaPreviewSize::new(800, 800),
                 model_palette: ModelPalette::default(),
                 archive_password: None,
+                pdf_password: None,
             },
             Rc::new(move |event| emit.borrow_mut().push(event)),
             move |_, operation, _, _, _| {

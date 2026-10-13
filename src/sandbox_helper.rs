@@ -92,6 +92,13 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
                 .filter(|fd| *fd >= 0)
                 .ok_or_else(|| "Invalid preview helper secret descriptor".to_owned())?,
         ),
+        [operation, ..] if operation == "preview-pdf" && arguments.len() == 6 => Some(
+            arguments[5]
+                .parse::<RawFd>()
+                .ok()
+                .filter(|fd| *fd >= 0)
+                .ok_or_else(|| "Invalid preview helper secret descriptor".to_owned())?,
+        ),
         _ if arguments.len() == 5 => None,
         _ => return Err("Invalid preview helper arguments".to_owned()),
     };
@@ -209,7 +216,24 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         "document-inline-math" => (document_media::math(input, false)?, None),
         "preview-pdf" => {
             let (page, size) = pdf_render_request(value)?;
-            let (png, page, pages, text_layer) = render_pdf_page(input, page, size)?;
+            let password = pdf_preview_password(secret_fd)?;
+            let (png, page, pages, text_layer) =
+                match render_pdf_page(input, page, size, password.as_deref()) {
+                    Ok(render) => render,
+                    Err(PdfRenderError::NeedsPassword) => {
+                        return report_pdf_password_status(
+                            output,
+                            crate::sandbox::WIRE_PDF_NEEDS_PASSWORD,
+                        );
+                    }
+                    Err(PdfRenderError::WrongPassword) => {
+                        return report_pdf_password_status(
+                            output,
+                            crate::sandbox::WIRE_PDF_WRONG_PASSWORD,
+                        );
+                    }
+                    Err(PdfRenderError::Failed(message)) => return Err(message),
+                };
             text_layer_bytes = text_layer;
             (png, Some(format!("{page} {pages}")))
         }
@@ -741,6 +765,40 @@ fn render_imagemagick_bytes(data: &[u8], size: i32) -> Result<Vec<u8>, String> {
     render_imagemagick(input.path(), size)
 }
 
+/// How a sandboxed PDF page render failed. Password outcomes are structural
+/// variants so the parent maps them without matching message text; anything
+/// else keeps its existing human-readable message.
+#[derive(Debug)]
+enum PdfRenderError {
+    NeedsPassword,
+    WrongPassword,
+    Failed(String),
+}
+
+/// Reads the staged PDF password for `preview-pdf`, if the parent attached
+/// one. Mirrors the `archive-list` secret handling with PDF wording.
+fn pdf_preview_password(secret_fd: Option<RawFd>) -> Result<Option<String>, String> {
+    let Some(descriptor) = secret_fd else {
+        return Ok(None);
+    };
+    let secret = read_secret_fd(descriptor)?;
+    if secret.len() > crate::sandbox::MAX_PDF_PASSWORD_BYTES {
+        return Err("PDF password is too long.".to_owned());
+    }
+    String::from_utf8(secret)
+        .map(Some)
+        .map_err(|_| "PDF password is not valid text.".to_owned())
+}
+
+/// Reports a password outcome through `result.error` so the parent can map
+/// the wire code without seeing the password. Exits the helper as a failure,
+/// like the model renderer's `result.error` path.
+fn report_pdf_password_status(output: &Path, status: &str) -> Result<(), String> {
+    fs::write(output.with_file_name("result.error"), status.as_bytes())
+        .map_err(|error| error.to_string())?;
+    Err(status.to_owned())
+}
+
 fn render_pdf_thumbnail(path: &Path, size: i32) -> Result<Vec<u8>, String> {
     let uri = gio::File::for_path(path).uri();
     let document = poppler::Document::from_file(&uri, None).map_err(|error| error.to_string())?;
@@ -767,22 +825,39 @@ fn render_pdf_page(
     path: &Path,
     requested_page: i32,
     size: PdfRenderSize,
-) -> Result<PdfPageRender, String> {
+    password: Option<&str>,
+) -> Result<PdfPageRender, PdfRenderError> {
     let uri = gio::File::for_path(path).uri();
-    let document = poppler::Document::from_file(&uri, None).map_err(|error| error.to_string())?;
+    let document = poppler::Document::from_file(&uri, password).map_err(|error| {
+        // Structured classification only: Poppler reports POPPLER_ERROR_ENCRYPTED
+        // both when no password was given and when the given one is wrong, so
+        // the attempt context (password present or not) decides the outcome.
+        // Every other failure keeps its existing message path.
+        if error.kind::<poppler::Error>() == Some(poppler::Error::Encrypted) {
+            if password.is_some() {
+                PdfRenderError::WrongPassword
+            } else {
+                PdfRenderError::NeedsPassword
+            }
+        } else {
+            PdfRenderError::Failed(error.to_string())
+        }
+    })?;
     let pages = document.n_pages();
     if pages <= 0 {
-        return Err("This PDF has no pages".to_owned());
+        return Err(PdfRenderError::Failed("This PDF has no pages".to_owned()));
     }
     let page_index = requested_page.clamp(0, pages - 1);
     let page = document
         .page(page_index)
-        .ok_or_else(|| "Unable to load that PDF page".to_owned())?;
+        .ok_or_else(|| PdfRenderError::Failed("Unable to load that PDF page".to_owned()))?;
     let size = PdfRenderSize::new(size.width, size.height);
     let (_, _, max_pixels) = size.image_limits();
     let (page_width, page_height) = page.size();
     if page_width <= 0.0 || page_height <= 0.0 {
-        return Err("The PDF page has invalid dimensions".to_owned());
+        return Err(PdfRenderError::Failed(
+            "The PDF page has invalid dimensions".to_owned(),
+        ));
     }
     let (width, height, scale) = bounded_surface_dimensions(
         page_width,
@@ -791,7 +866,7 @@ fn render_pdf_page(
         f64::from(size.height),
         max_pixels as f64,
     );
-    let png = render_pdf_surface(&page, width, height, scale)?;
+    let png = render_pdf_surface(&page, width, height, scale).map_err(PdfRenderError::Failed)?;
     let text_layer = pdf_text_layer(&page, width, height, scale);
     Ok((png, page_index, pages, text_layer))
 }

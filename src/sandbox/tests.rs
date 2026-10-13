@@ -15,10 +15,13 @@ const MEDIA_PREVIEW: super::ParseOperation =
         width: 640,
         height: 800,
     });
-const PDF_PREVIEW: super::ParseOperation = super::ParseOperation::PreviewPdf(PdfRenderSize {
-    width: 640,
-    height: 800,
-});
+const PDF_PREVIEW: super::ParseOperation = super::ParseOperation::PreviewPdf {
+    size: PdfRenderSize {
+        width: 640,
+        height: 800,
+    },
+    password: None,
+};
 
 use super::{
     Cancellation, MAX_RASTER_INPUT_BYTES, MediaPreviewBackend, OutputError, ParseOperation,
@@ -1037,6 +1040,34 @@ fn archive_operation_debug_redacts_the_password() {
     );
     let operation = ParseOperation::ArchiveList {
         format: crate::services::ArchiveFormat::Zip,
+        password: None,
+    };
+    let rendered = format!("{operation:?}");
+    assert!(
+        rendered.contains("password: None"),
+        "an absent password must stay distinguishable, got {rendered:?}"
+    );
+}
+
+#[test]
+fn pdf_operation_debug_redacts_the_password_without_touching_archives() {
+    let operation = ParseOperation::PreviewPdf {
+        size: PdfRenderSize::new(640, 800),
+        password: Some(crate::services::SecretString::new(
+            "strata-security-repro-pdf-password".to_owned(),
+        )),
+    };
+    let rendered = format!("{operation:?}");
+    assert!(
+        !rendered.contains("strata-security-repro-pdf-password"),
+        "Debug must never expose the password, got {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Some([REDACTED])"),
+        "a present password must render redacted-but-present, got {rendered:?}"
+    );
+    let operation = ParseOperation::PreviewPdf {
+        size: PdfRenderSize::new(640, 800),
         password: None,
     };
     let rendered = format!("{operation:?}");

@@ -638,6 +638,7 @@ fn password_request(password: Option<&str>) -> super::PreviewRequest {
         media_size: MediaPreviewSize::new(640, 800),
         model_palette: crate::services::ModelPalette::default(),
         archive_password: password.map(|password| super::SecretString::new(password.to_owned())),
+        pdf_password: None,
     }
 }
 
@@ -659,6 +660,30 @@ fn preview_request_debug_redacts_the_archive_password() {
     assert!(
         rendered.contains("archive_password: None"),
         "an absent password must stay distinguishable, got {rendered:?}"
+    );
+    assert!(
+        rendered.contains("pdf_password: None"),
+        "an absent PDF password must stay distinguishable, got {rendered:?}"
+    );
+}
+
+#[test]
+fn preview_request_debug_redacts_the_pdf_password_without_mixing_states() {
+    let mut request = password_request(None);
+    request.archive_password = Some(super::SecretString::new("archive-secret".to_owned()));
+    request.pdf_password = Some(super::SecretString::new(
+        "strata-security-repro-pdf-password".to_owned(),
+    ));
+    let rendered = format!("{request:?}");
+    assert!(
+        !rendered.contains("archive-secret")
+            && !rendered.contains("strata-security-repro-pdf-password"),
+        "Debug must never expose either password, got {rendered:?}"
+    );
+    assert!(
+        rendered.contains("archive_password: Some([REDACTED])")
+            && rendered.contains("pdf_password: Some([REDACTED])"),
+        "both password states must render redacted-but-present, got {rendered:?}"
     );
 }
 

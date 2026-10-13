@@ -18,10 +18,10 @@ use std::{
 use gdk_pixbuf::prelude::*;
 
 use super::{
-    bounded_output, bounded_output_with_timeout, bounded_surface_dimensions,
+    PdfRenderError, bounded_output, bounded_output_with_timeout, bounded_surface_dimensions,
     exceeds_decoded_frame_budget, is_svg_head, pdf_render_request, read_exif_thumbnail,
-    read_limited, render_pixbuf, render_raw, render_raw_thumbnail, render_simple_dcraw, run,
-    scale_embedded_thumbnail, svg_source,
+    read_limited, render_pdf_page, render_pixbuf, render_raw, render_raw_thumbnail,
+    render_simple_dcraw, run, scale_embedded_thumbnail, svg_source,
 };
 
 #[test]
@@ -842,4 +842,210 @@ fn archive_list_reports_corrupt_input_without_crashing() {
         Err(message) => assert_eq!(message, crate::adapters::INVALID_ARCHIVE),
         Ok(_) => panic!("corrupt input must not list"),
     }
+}
+
+const PDF_FIXTURE_PASSWORD: &str = "strata-pdf-fixture";
+const PDF_FIXTURE_WRONG_PASSWORD: &str = "not-the-fixture-password";
+
+fn pdf_fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/documents")
+        .join(name)
+}
+
+fn pdf_preview_size() -> crate::sandbox::PdfRenderSize {
+    crate::sandbox::PdfRenderSize::new(640, 800)
+}
+
+#[test]
+fn pdf_page_renders_without_a_password_for_unprotected_documents() {
+    let (png, page, pages, _) =
+        render_pdf_page(&pdf_fixture("text.pdf"), 0, pdf_preview_size(), None)
+            .expect("unprotected PDF renders");
+    assert!(!png.is_empty(), "rendered page must produce PNG bytes");
+    assert_eq!((page, pages), (0, 1));
+}
+
+#[test]
+fn protected_pdf_reports_needs_password_without_one() {
+    assert!(
+        matches!(
+            render_pdf_page(&pdf_fixture("locked.pdf"), 0, pdf_preview_size(), None),
+            Err(PdfRenderError::NeedsPassword)
+        ),
+        "a locked PDF without a password must report NeedsPassword structurally"
+    );
+}
+
+#[test]
+fn protected_pdf_reports_wrong_password_for_an_incorrect_one() {
+    for password in [PDF_FIXTURE_WRONG_PASSWORD, ""] {
+        assert!(
+            matches!(
+                render_pdf_page(
+                    &pdf_fixture("locked.pdf"),
+                    0,
+                    pdf_preview_size(),
+                    Some(password)
+                ),
+                Err(PdfRenderError::WrongPassword)
+            ),
+            "password {password:?} must report WrongPassword structurally"
+        );
+    }
+}
+
+#[test]
+fn protected_pdf_renders_with_the_correct_password() {
+    let (png, page, pages, _) = render_pdf_page(
+        &pdf_fixture("locked.pdf"),
+        0,
+        pdf_preview_size(),
+        Some(PDF_FIXTURE_PASSWORD),
+    )
+    .expect("correct password unlocks the PDF");
+    assert!(!png.is_empty(), "unlocked page must produce PNG bytes");
+    assert_eq!((page, pages), (0, 1));
+}
+
+#[test]
+fn damaged_pdf_keeps_a_generic_failure_without_a_password_prompt() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("damaged.pdf");
+    std::fs::write(&input, b"not a PDF at all").expect("write junk");
+    assert!(
+        matches!(
+            render_pdf_page(&input, 0, pdf_preview_size(), None),
+            Err(PdfRenderError::Failed(_))
+        ),
+        "damage must never classify as a password outcome"
+    );
+    assert!(
+        matches!(
+            render_pdf_page(&input, 0, pdf_preview_size(), Some(PDF_FIXTURE_PASSWORD)),
+            Err(PdfRenderError::Failed(_))
+        ),
+        "a password must not turn damage into a password outcome"
+    );
+}
+
+#[test]
+fn pdf_thumbnail_fails_closed_on_locked_documents() {
+    assert!(
+        super::render_pdf_thumbnail(&pdf_fixture("locked.pdf"), 128).is_err(),
+        "thumbnails stay passwordless and must not prompt"
+    );
+}
+
+fn pdf_preview_output(
+    directory: &tempfile::TempDir,
+    input: &std::path::Path,
+    password: Option<&[u8]>,
+) -> Result<(), String> {
+    let output = directory.path().join("result.png");
+    let secret =
+        password.map(|password| crate::sandbox::stage_secret_anon(password).expect("stage secret"));
+    let mut arguments = vec![
+        "preview-pdf".to_owned(),
+        input.to_string_lossy().into_owned(),
+        output.to_string_lossy().into_owned(),
+        "0:640x800".to_owned(),
+        "software".to_owned(),
+    ];
+    if let Some(secret) = &secret {
+        use std::os::fd::AsRawFd;
+        arguments.push(secret.as_raw_fd().to_string());
+    }
+    run(&arguments)
+}
+
+#[test]
+fn pdf_preview_dispatch_reports_needs_password_through_result_error() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let error = pdf_preview_output(&directory, &pdf_fixture("locked.pdf"), None)
+        .expect_err("locked PDF without a password must fail");
+    assert_eq!(error, crate::sandbox::WIRE_PDF_NEEDS_PASSWORD);
+    assert_eq!(
+        std::fs::read(directory.path().join("result.error")).expect("read status file"),
+        crate::sandbox::WIRE_PDF_NEEDS_PASSWORD.as_bytes()
+    );
+    assert!(
+        !directory.path().join("result.png").exists(),
+        "locked PDFs must not produce a render"
+    );
+}
+
+#[test]
+fn pdf_preview_dispatch_reports_wrong_password_through_result_error() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let error = pdf_preview_output(
+        &directory,
+        &pdf_fixture("locked.pdf"),
+        Some(PDF_FIXTURE_WRONG_PASSWORD.as_bytes()),
+    )
+    .expect_err("wrong password must fail");
+    assert_eq!(error, crate::sandbox::WIRE_PDF_WRONG_PASSWORD);
+    assert_eq!(
+        std::fs::read(directory.path().join("result.error")).expect("read status file"),
+        crate::sandbox::WIRE_PDF_WRONG_PASSWORD.as_bytes()
+    );
+}
+
+#[test]
+fn pdf_preview_dispatch_renders_with_the_correct_password() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    pdf_preview_output(
+        &directory,
+        &pdf_fixture("locked.pdf"),
+        Some(PDF_FIXTURE_PASSWORD.as_bytes()),
+    )
+    .expect("correct password renders");
+    assert!(
+        !std::fs::read(directory.path().join("result.png"))
+            .expect("read render")
+            .is_empty()
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("result.meta")).expect("read metadata"),
+        "0 1"
+    );
+}
+
+#[test]
+fn pdf_preview_dispatch_rejects_overlong_and_non_utf8_passwords() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let secret =
+        crate::sandbox::stage_secret_anon(&vec![b'x'; crate::sandbox::MAX_PDF_PASSWORD_BYTES + 1])
+            .expect("stage password");
+    use std::os::fd::AsRawFd;
+    let error = run(&[
+        "preview-pdf".to_owned(),
+        pdf_fixture("text.pdf").to_string_lossy().into_owned(),
+        directory
+            .path()
+            .join("result.png")
+            .to_string_lossy()
+            .into_owned(),
+        "0:640x800".to_owned(),
+        "software".to_owned(),
+        secret.as_raw_fd().to_string(),
+    ])
+    .expect_err("overlong password must fail");
+    assert_eq!(error, "PDF password is too long.");
+
+    let secret = crate::sandbox::stage_secret_anon(&[0xFF, 0xFE]).expect("stage password");
+    let error = run(&[
+        "preview-pdf".to_owned(),
+        pdf_fixture("text.pdf").to_string_lossy().into_owned(),
+        directory
+            .path()
+            .join("result.png")
+            .to_string_lossy()
+            .into_owned(),
+        "0:640x800".to_owned(),
+        "software".to_owned(),
+        secret.as_raw_fd().to_string(),
+    ])
+    .expect_err("non-UTF8 password must fail");
+    assert_eq!(error, "PDF password is not valid text.");
 }

@@ -14,7 +14,7 @@ use sourceview5::prelude::*;
 
 use crate::{
     app::{Browser, BrowserEvent},
-    model::{EntryKind, FileEntry, MetadataValue},
+    model::{EntryKind, FileEntry, Location, MetadataValue},
     services::{
         ArchivePreviewTree, DocumentLayout, LoadHandle, MediaPreviewSize, PdfTextLayer, Preview,
         PreviewContent, PreviewEvent, PreviewProvider, PreviewRequest, PreviewRequestId,
@@ -199,6 +199,10 @@ struct PreviewState {
     text_scroll: RefCell<Option<gtk::ScrolledWindow>>,
     archive_browser: RefCell<Option<archive::ArchiveBrowser>>,
     password_entry: RefCell<Option<gtk::PasswordEntry>>,
+    /// The unlocked PDF password for the currently previewed file only.
+    /// Never persisted; cleared whenever another file loads. Archive
+    /// passwords never land here and vice versa.
+    pdf_password: RefCell<Option<(Location, SecretString)>>,
     media: RefCell<Option<gtk::MediaStream>>,
     media_signals: RefCell<Vec<glib::SignalHandlerId>>,
     media_volume_slider: RefCell<Option<gtk::Scale>>,
@@ -433,6 +437,7 @@ impl PreviewDrawer {
             text_scroll: RefCell::new(None),
             archive_browser: RefCell::new(None),
             password_entry: RefCell::new(None),
+            pdf_password: RefCell::new(None),
             media: RefCell::new(None),
             media_signals: RefCell::new(Vec::new()),
             media_volume_slider: RefCell::new(None),
@@ -1121,6 +1126,7 @@ impl PreviewState {
         self.print_request.set(Some(request_id));
         let weak = Rc::downgrade(self);
         let entry_for_event = entry.clone();
+        let print_pdf_password = self.pdf_password_for(&entry);
         let emit = Rc::new(move |event| {
             let Some(state) = weak.upgrade() else {
                 return;
@@ -1143,6 +1149,7 @@ impl PreviewState {
                 media_size: self.media_preview_size(),
                 model_palette: super::theme::ThemeManager::shared().active_model_palette(),
                 archive_password: None,
+                pdf_password: print_pdf_password,
             },
             emit,
         );
@@ -1232,7 +1239,8 @@ impl PreviewState {
             PreviewEvent::Progress { .. }
             | PreviewEvent::Ready(_)
             | PreviewEvent::Failed { .. }
-            | PreviewEvent::NeedsPassword { .. } => {}
+            | PreviewEvent::NeedsPassword { .. }
+            | PreviewEvent::NeedsPdfPassword { .. } => {}
         }
     }
 
@@ -1284,7 +1292,7 @@ impl PreviewState {
     }
 
     fn load(self: &Rc<Self>, entry: FileEntry, pdf_page: i32) {
-        self.load_with_password(entry, pdf_page, None);
+        self.load_with_password(entry, pdf_page, None, None);
     }
 
     fn load_with_password(
@@ -1292,6 +1300,7 @@ impl PreviewState {
         entry: FileEntry,
         pdf_page: i32,
         archive_password: Option<SecretString>,
+        pdf_password: Option<SecretString>,
     ) {
         let render_document =
             super::preferences::PreferenceManager::shared().render_documents_by_default();
@@ -1300,7 +1309,24 @@ impl PreviewState {
         } else {
             DocumentView::Source
         });
-        self.load_request(entry, pdf_page, render_document, archive_password);
+        self.load_request(
+            entry,
+            pdf_page,
+            render_document,
+            archive_password,
+            pdf_password,
+        );
+    }
+
+    /// The retained unlock secret, only when it belongs to `entry`. Page
+    /// binds and print loads for the same file reuse it; any other file
+    /// gets `None`, which re-prompts instead of reusing a secret.
+    fn pdf_password_for(&self, entry: &FileEntry) -> Option<SecretString> {
+        self.pdf_password
+            .borrow()
+            .as_ref()
+            .filter(|(location, _)| *location == entry.location)
+            .map(|(_, secret)| secret.clone())
     }
 
     fn clear_raw_details(&self) {
@@ -1315,6 +1341,7 @@ impl PreviewState {
         pdf_page: i32,
         render_document: bool,
         archive_password: Option<SecretString>,
+        pdf_password: Option<SecretString>,
     ) {
         self.raw_metadata_load.borrow_mut().take();
         if super::raw_details::supports(&entry) {
@@ -1342,6 +1369,13 @@ impl PreviewState {
         self.content_type.set_text(file_extension(&entry));
         self.load.borrow_mut().take();
         self.pdf_loads.borrow_mut().clear();
+        // Retain the unlock secret for this file's page binds; a fresh load
+        // without one (navigation, refresh) drops whatever was retained.
+        self.pdf_password.replace(
+            pdf_password
+                .clone()
+                .map(|secret| (entry.location.clone(), secret)),
+        );
 
         let request_id = PreviewRequestId(self.next_request.get());
         self.next_request
@@ -1372,6 +1406,7 @@ impl PreviewState {
                 media_size: self.media_preview_size(),
                 model_palette: super::theme::ThemeManager::shared().active_model_palette(),
                 archive_password,
+                pdf_password,
             },
             emit,
         );
@@ -1384,6 +1419,7 @@ impl PreviewState {
             PreviewEvent::Ready(preview) => preview.request_id,
             PreviewEvent::Failed { request_id, .. } => *request_id,
             PreviewEvent::NeedsPassword { request_id, .. } => *request_id,
+            PreviewEvent::NeedsPdfPassword { request_id, .. } => *request_id,
         };
         if !accepts_preview_event(self.current_request.get(), expected, response) {
             return;
@@ -1413,6 +1449,8 @@ impl PreviewState {
                 let detail = crate::i18n::tr(&message);
                 if message == crate::services::INCORRECT_ARCHIVE_PASSWORD {
                     self.render_archive_password_prompt(entry, Some(&detail));
+                } else if message == crate::services::INCORRECT_PDF_PASSWORD {
+                    self.render_pdf_password_prompt(entry, Some(&detail));
                 } else {
                     self.current_request.set(None);
                     let title = crate::i18n::tr("Preview unavailable");
@@ -1430,13 +1468,65 @@ impl PreviewState {
                 self.title.set_text(&entry.display_name);
                 self.render_archive_password_prompt(entry, None);
             }
+            PreviewEvent::NeedsPdfPassword { request_id, entry } if request_id == expected => {
+                self.continue_playback.take();
+                self.load.borrow_mut().take();
+                self.cancel_loading();
+                self.title.set_text(&entry.display_name);
+                self.render_pdf_password_prompt(entry, None);
+            }
             PreviewEvent::Ready(_)
             | PreviewEvent::Failed { .. }
-            | PreviewEvent::NeedsPassword { .. } => {}
+            | PreviewEvent::NeedsPassword { .. }
+            | PreviewEvent::NeedsPdfPassword { .. } => {}
         }
     }
 
     fn render_archive_password_prompt(self: &Rc<Self>, entry: FileEntry, error: Option<&str>) {
+        let weak = Rc::downgrade(self);
+        let unlock_entry = entry.clone();
+        self.render_lock_prompt(
+            entry,
+            &crate::i18n::tr("Password-protected archive"),
+            &crate::i18n::tr("Enter the password to preview the archive contents"),
+            error,
+            Rc::new(move |password| {
+                if let Some(state) = weak.upgrade() {
+                    state.focus_archive_on_ready.set(true);
+                    state.load_with_password(unlock_entry.clone(), 0, Some(password), None);
+                }
+            }),
+        );
+    }
+
+    fn render_pdf_password_prompt(self: &Rc<Self>, entry: FileEntry, error: Option<&str>) {
+        let weak = Rc::downgrade(self);
+        let unlock_entry = entry.clone();
+        self.render_lock_prompt(
+            entry,
+            &crate::i18n::tr("Password-protected PDF"),
+            &crate::i18n::tr("Enter the password to preview the PDF contents"),
+            error,
+            Rc::new(move |password| {
+                if let Some(state) = weak.upgrade() {
+                    state.load_with_password(unlock_entry.clone(), 0, None, Some(password));
+                }
+            }),
+        );
+    }
+
+    /// Shared lock prompt for password-gated previews. Archive and PDF
+    /// unlocks share layout, focus handling, and keyboard retention; only the
+    /// strings and the `unlock` continuation differ, keeping each secret in
+    /// its own request state.
+    fn render_lock_prompt(
+        self: &Rc<Self>,
+        entry: FileEntry,
+        title: &str,
+        detail: &str,
+        error: Option<&str>,
+        unlock: Rc<dyn Fn(SecretString)>,
+    ) {
         self.clear_content();
         self.content_type.set_text(file_extension(&entry));
         let box_ = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -1448,14 +1538,12 @@ impl PreviewState {
         let icon = crate::assets::primary_icon(crate::assets::icons::LOCK, 34);
         icon.add_css_class("preview-feedback-icon");
         box_.append(&icon);
-        let heading = gtk::Label::new(Some(&crate::i18n::tr("Password-protected archive")));
+        let heading = gtk::Label::new(Some(title));
         heading.add_css_class("preview-feedback-title");
         heading.set_wrap(true);
         heading.set_justify(gtk::Justification::Center);
         box_.append(&heading);
-        let detail = gtk::Label::new(Some(&crate::i18n::tr(
-            "Enter the password to preview the archive contents",
-        )));
+        let detail = gtk::Label::new(Some(detail));
         detail.add_css_class("preview-feedback-detail");
         detail.set_wrap(true);
         detail.set_justify(gtk::Justification::Center);
@@ -1467,18 +1555,18 @@ impl PreviewState {
         // Narrow panes shrink the entry rather than overflowing the window.
         password.set_width_chars(8);
         password.set_max_width_chars(24);
-        let unlock = gtk::Button::with_label(&crate::i18n::tr("Unlock"));
-        unlock.add_css_class("suggested-action");
+        let unlock_button = gtk::Button::with_label(&crate::i18n::tr("Unlock"));
+        unlock_button.add_css_class("suggested-action");
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         row.add_css_class("preview-archive-password-row");
         row.set_halign(gtk::Align::Center);
         row.append(&password);
-        row.append(&unlock);
+        row.append(&unlock_button);
         box_.append(&row);
 
         let weak = Rc::downgrade(self);
-        let unlock_entry = entry.clone();
-        unlock.connect_clicked(move |_| {
+        let unlock_for_click = unlock.clone();
+        unlock_button.connect_clicked(move |_| {
             if let Some(state) = weak.upgrade() {
                 let password = SecretString::new(
                     state
@@ -1488,18 +1576,12 @@ impl PreviewState {
                         .map(|entry| entry.text().to_string())
                         .unwrap_or_default(),
                 );
-                state.focus_archive_on_ready.set(true);
-                state.load_with_password(unlock_entry.clone(), 0, Some(password));
+                unlock_for_click(password);
             }
         });
-        let weak = Rc::downgrade(self);
-        let activate_entry = entry.clone();
+        let unlock_for_activate = unlock.clone();
         password.connect_activate(move |entry| {
-            if let Some(state) = weak.upgrade() {
-                let password = SecretString::new(entry.text().to_string());
-                state.focus_archive_on_ready.set(true);
-                state.load_with_password(activate_entry.clone(), 0, Some(password));
-            }
+            unlock_for_activate(SecretString::new(entry.text().to_string()));
         });
 
         if let Some(error) = error {
@@ -1908,7 +1990,7 @@ impl PreviewState {
             self.update_document_view_action();
             let entry = self.current.borrow().clone();
             if let Some(entry) = entry {
-                self.load_request(entry, 0, true, None);
+                self.load_request(entry, 0, true, None, None);
             }
             return;
         }
@@ -2095,6 +2177,9 @@ impl PreviewState {
 
         let provider = self.provider.clone();
         let loads = self.pdf_loads.clone();
+        // Page binds reuse the retained unlock secret for this file; a weak
+        // reference avoids a retain cycle through the factory closure.
+        let retained_pdf_password = Rc::downgrade(self);
         let render_size = self.media_preview_size();
         let initial_page = Rc::new(RefCell::new(Some((initial_page, initial_png))));
         let next_request = Rc::new(Cell::new(self.next_request.get().saturating_add(10_000)));
@@ -2234,6 +2319,10 @@ impl PreviewState {
                     PreviewEvent::Failed {
                         request_id: response_id,
                         ..
+                    }
+                    | PreviewEvent::NeedsPdfPassword {
+                        request_id: response_id,
+                        ..
                     } if response_id == request_id => {
                         crate::ui::accessibility::set_description(
                             &overlay,
@@ -2243,7 +2332,8 @@ impl PreviewState {
                     PreviewEvent::Progress { .. }
                     | PreviewEvent::Ready(_)
                     | PreviewEvent::Failed { .. }
-                    | PreviewEvent::NeedsPassword { .. } => return,
+                    | PreviewEvent::NeedsPassword { .. }
+                    | PreviewEvent::NeedsPdfPassword { .. } => return,
                 }
                 if let Some(spinner) = weak_spinner.upgrade() {
                     spinner.stop();
@@ -2260,6 +2350,9 @@ impl PreviewState {
                     media_size: render_size,
                     model_palette: super::theme::ThemeManager::shared().active_model_palette(),
                     archive_password: None,
+                    pdf_password: retained_pdf_password
+                        .upgrade()
+                        .and_then(|state| state.pdf_password_for(&entry_for_bind)),
                 },
                 emit,
             );

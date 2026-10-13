@@ -34,6 +34,14 @@ const TEMPORARY_STORAGE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RASTER_INPUT_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const MAX_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const MAX_TEXT_LAYER_BYTES: u64 = 8 * 1024 * 1024;
+/// Wire codes the sandboxed PDF renderer reports through `result.error` when a
+/// document refuses to open for password reasons. Internal protocol values:
+/// never translated, never matched against human-readable text.
+pub(crate) const WIRE_PDF_NEEDS_PASSWORD: &str = "needs-pdf-password";
+pub(crate) const WIRE_PDF_WRONG_PASSWORD: &str = "wrong-pdf-password";
+/// Same bound as [`crate::adapters::MAX_ARCHIVE_PASSWORD_BYTES`]: every
+/// preview secret staged over the memfd is length-checked before use.
+pub(crate) const MAX_PDF_PASSWORD_BYTES: usize = 4096;
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -152,7 +160,13 @@ pub(crate) enum ParseOperation {
     RawMetadata,
     PreviewWorkbook,
     PreviewDocument,
-    PreviewPdf(PdfRenderSize),
+    PreviewPdf {
+        size: PdfRenderSize,
+        /// Kept separate from [`ParseOperation::ArchiveList`] passwords and
+        /// staged over the same anonymous memfd; [`SecretString`] redacts it
+        /// from `Debug`.
+        password: Option<SecretString>,
+    },
     PreviewModel(ModelRender),
     PreviewMedia(MediaPreviewSize),
     PreviewAudio(MediaPreviewSize),
@@ -190,7 +204,7 @@ impl ParseOperation {
             Self::RawMetadata => "raw-metadata",
             Self::PreviewWorkbook => "preview-workbook",
             Self::PreviewDocument => "preview-document",
-            Self::PreviewPdf(_) => "preview-pdf",
+            Self::PreviewPdf { .. } => "preview-pdf",
             Self::PreviewModel(_) => "preview-model",
             Self::PreviewMedia(_) => "preview-media",
             Self::PreviewAudio(_) => "preview-audio",
@@ -265,7 +279,7 @@ impl ParseOperation {
             | Self::DocumentImage
             | Self::DocumentMermaid
             | Self::DocumentMath { .. } => Some((800, 800, 800 * 800)),
-            Self::PreviewPdf(size) => Some(size.image_limits()),
+            Self::PreviewPdf { size, .. } => Some(size.image_limits()),
             Self::PreviewModel(render) => {
                 let size = MediaPreviewSize::new(render.size.width, render.size.height);
                 Some((size.width as u32, size.height as u32, 1280 * 1280))
@@ -291,7 +305,7 @@ impl ParseOperation {
             | Self::ThumbnailPdf
             | Self::PreviewImage
             | Self::RawMetadata
-            | Self::PreviewPdf(_) => Some(MAX_RASTER_INPUT_BYTES),
+            | Self::PreviewPdf { .. } => Some(MAX_RASTER_INPUT_BYTES),
             Self::PreviewModel(_) | Self::ThumbnailModel(_) => Some(MAX_MODEL_INPUT_BYTES),
             Self::ThumbnailCover(_) | Self::PreviewCover(_) => {
                 Some(crate::sandbox_helper::archive_cover::MAX_INPUT_BYTES)
@@ -455,6 +469,10 @@ fn parse_sandboxed(
     let secret = if let ParseOperation::ArchiveList {
         password: Some(password),
         ..
+    }
+    | ParseOperation::PreviewPdf {
+        password: Some(password),
+        ..
     } = &operation
     {
         Some(stage_secret_anon(password.expose().as_bytes())?)
@@ -516,6 +534,7 @@ fn parse_sandboxed(
         if matches!(
             operation,
             ParseOperation::PreviewModel(_)
+                | ParseOperation::PreviewPdf { .. }
                 | ParseOperation::InspectImage
                 | ParseOperation::ConvertImage
         ) && let Ok(data) = read_private_output(&output.path().join("result.error"), 512)
@@ -554,7 +573,7 @@ fn parse_sandboxed(
     let (page, pages) = read_metadata(&output.path().join("result.meta"));
     // A page without an extractable text layer (scanned images, malformed layout)
     // still previews; selection just stays unavailable there.
-    let text_layer = if matches!(operation, ParseOperation::PreviewPdf(_)) {
+    let text_layer = if matches!(operation, ParseOperation::PreviewPdf { .. }) {
         read_private_output(&output.path().join("result.text"), MAX_TEXT_LAYER_BYTES)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -823,7 +842,7 @@ fn sandbox_command(
     } else {
         command.arg(format!("/output/{}", operation.output_name()));
         let value = match operation {
-            ParseOperation::PreviewPdf(size) => {
+            ParseOperation::PreviewPdf { size, .. } => {
                 let size = PdfRenderSize::new(size.width, size.height);
                 format!("{value}:{}x{}", size.width, size.height)
             }

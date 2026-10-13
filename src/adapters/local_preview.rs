@@ -522,9 +522,10 @@ impl LocalPreviewProvider {
             } else if let Some(format) = crate::sandbox::CoverFormat::for_name(&entry.native_name) {
                 Some(ParseOperation::PreviewCover(format))
             } else { match content {
-                PreviewContent::Pdf { .. } => Some(ParseOperation::PreviewPdf(pdf_render_size(
-                    request.media_size,
-                ))),
+                PreviewContent::Pdf { .. } => Some(ParseOperation::PreviewPdf {
+                    size: pdf_render_size(request.media_size),
+                    password: request.pdf_password.clone(),
+                }),
                 PreviewContent::Image => Some(ParseOperation::PreviewImage),
                 PreviewContent::Media => None,
                 PreviewContent::Text { .. }
@@ -582,15 +583,23 @@ impl LocalPreviewProvider {
                     | crate::model::MetadataValue::Unavailable => None,
                 };
                 let pdf_page = match operation {
-                    ParseOperation::PreviewPdf(size) => Some((request.pdf_page, *size)),
+                    ParseOperation::PreviewPdf { size, .. } => Some((request.pdf_page, *size)),
                     _ => None,
                 };
-                let cache_key = modified.map(|modified| PreviewCacheKey {
-                    path: path.clone(),
-                    modified,
-                    pdf_page,
-                    model,
-                });
+                // Unlocked renders are never cached: revisiting the file must
+                // prompt again, and unlocked pixels must not reach the
+                // persistent thumbnail cache. The password itself is never a
+                // cache key.
+                let cache_key = if request.pdf_password.is_some() {
+                    None
+                } else {
+                    modified.map(|modified| PreviewCacheKey {
+                        path: path.clone(),
+                        modified,
+                        pdf_page,
+                        model,
+                    })
+                };
                 if let Some(cached) = cache_key
                     .as_ref()
                     .and_then(|key| PREVIEW_CACHE.with(|cache| cache.borrow_mut().get(key)))
@@ -608,7 +617,7 @@ impl LocalPreviewProvider {
                     return;
                 }
 
-                let heavy_permit = if matches!(operation, ParseOperation::PreviewPdf(_) | ParseOperation::PreviewModel(_) | ParseOperation::PreviewCover(_)) {
+                let heavy_permit = if matches!(operation, ParseOperation::PreviewPdf { .. } | ParseOperation::PreviewModel(_) | ParseOperation::PreviewCover(_)) {
                     let Some(permit) = request_heavy_preview_permit().acquire().await else {
                         return;
                     };
@@ -645,9 +654,10 @@ impl LocalPreviewProvider {
                     Ok(Ok(output)) if model.is_some() => PreviewContent::Model {
                         png: output.data,
                     },
-                    Ok(Ok(output)) if matches!(operation, ParseOperation::PreviewPdf(_)) => {
+                    Ok(Ok(output)) if matches!(operation, ParseOperation::PreviewPdf { .. }) => {
                         if let Some(mtime) = modified
                             && request.pdf_page == 0
+                            && request.pdf_password.is_none()
                         {
                             thumbnail_to_store = Some((path.clone(), mtime, output.data.clone()));
                         }
@@ -663,6 +673,30 @@ impl LocalPreviewProvider {
                             thumbnail_to_store = Some((path.clone(), mtime, output.data.clone()));
                         }
                         PreviewContent::Rasterized { png: output.data }
+                    }
+                    Ok(Err(message))
+                        if matches!(operation, ParseOperation::PreviewPdf { .. }) =>
+                    {
+                        // Wire codes, never human text: only exact protocol
+                        // constants decide the password prompt, so a damaged
+                        // PDF or a filename containing "password" can never
+                        // open it.
+                        if message == crate::sandbox::WIRE_PDF_NEEDS_PASSWORD {
+                            emit(PreviewEvent::NeedsPdfPassword { request_id, entry });
+                        } else if message == crate::sandbox::WIRE_PDF_WRONG_PASSWORD {
+                            emit(PreviewEvent::Failed {
+                                request_id,
+                                entry,
+                                message: crate::services::INCORRECT_PDF_PASSWORD.to_owned(),
+                            });
+                        } else {
+                            emit(PreviewEvent::Failed {
+                                request_id,
+                                entry,
+                                message,
+                            });
+                        }
+                        return;
                     }
                     Ok(Err(message)) => {
                         emit(PreviewEvent::Failed {

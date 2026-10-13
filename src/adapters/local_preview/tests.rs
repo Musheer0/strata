@@ -161,6 +161,7 @@ fn cold_previews_with_shared_thumbnails_match_rendered_cache_hits() {
                     media_size: MediaPreviewSize::new(640, 800),
                     model_palette: crate::services::ModelPalette::default(),
                     archive_password: None,
+                    pdf_password: None,
                 };
                 let provider = LocalPreviewProvider::new(Rc::new(|| MediaPreviewBackend::Software));
                 let context = glib::MainContext::default();
@@ -410,6 +411,7 @@ fn cancelled_in_flight_document_renders_keep_the_permit_and_emit_no_stale_events
                 media_size: MediaPreviewSize::new(640, 800),
                 model_palette: crate::services::ModelPalette::default(),
                 archive_password: None,
+                pdf_password: None,
             },
             Rc::new(move |event| events_for_emit.borrow_mut().push(event)),
             move |_, _, _, _, cancellation| {
@@ -495,6 +497,7 @@ fn cancelled_archive_listings_emit_no_stale_events() {
             media_size: MediaPreviewSize::new(640, 800),
             model_palette: crate::services::ModelPalette::default(),
             archive_password: None,
+            pdf_password: None,
         },
         Rc::new(move |event| events_for_emit.borrow_mut().push(event)),
         move |_, _, _, _, cancellation| {
@@ -697,6 +700,7 @@ fn uncertain_file_names_resolve_their_preview_from_the_content() {
             media_size: MediaPreviewSize::new(640, 800),
             model_palette: crate::services::ModelPalette::default(),
             archive_password: None,
+            pdf_password: None,
         };
         let events = Rc::new(RefCell::new(Vec::new()));
         let events_for_emit = events.clone();
@@ -772,6 +776,7 @@ fn text_subclassed_names_resolve_their_preview_from_the_type_hierarchy() {
             media_size: MediaPreviewSize::new(640, 800),
             model_palette: crate::services::ModelPalette::default(),
             archive_password: None,
+            pdf_password: None,
         };
         let events = Rc::new(RefCell::new(Vec::new()));
         let events_for_emit = events.clone();
@@ -851,6 +856,7 @@ fn archives_list_member_trees_as_preview_content() {
                 media_size: MediaPreviewSize::new(640, 800),
                 model_palette: crate::services::ModelPalette::default(),
                 archive_password: None,
+                pdf_password: None,
             };
             let provider = LocalPreviewProvider::new(Rc::new(|| MediaPreviewBackend::Software));
             let context = glib::MainContext::default();
@@ -961,6 +967,7 @@ fn preview_archive_with_password(
         model_palette: crate::services::ModelPalette::default(),
         archive_password: password
             .map(|password| crate::services::SecretString::new(password.to_owned())),
+        pdf_password: None,
     };
     let provider = LocalPreviewProvider::new(Rc::new(|| MediaPreviewBackend::Software));
     let context = glib::MainContext::default();
@@ -1194,6 +1201,148 @@ fn encrypted_zip_preview_rejects_incorrect_and_empty_passwords() {
     );
 }
 
+fn preview_locked_pdf(
+    password: Option<&str>,
+    archive_password: Option<&str>,
+    renderer_calls: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> Vec<PreviewEvent> {
+    use crate::{
+        model::{EntryKind, FileEntry, Location, MetadataValue},
+        services::PreviewRequestId,
+    };
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/documents/locked.pdf");
+    let request = PreviewRequest {
+        id: PreviewRequestId(1),
+        entry: FileEntry {
+            location: Location::local(&path),
+            thumbnail_path: None,
+            native_name: "locked.pdf".into(),
+            display_name: "locked.pdf".into(),
+            kind: EntryKind::File,
+            size: MetadataValue::Unknown,
+            modified_unix_seconds: MetadataValue::Unknown,
+            mode: MetadataValue::Unknown,
+            recent_unix_seconds: MetadataValue::Unknown,
+            image_dimensions: MetadataValue::Unknown,
+            child_count: MetadataValue::Unknown,
+            duration_seconds: MetadataValue::Unknown,
+            is_hidden: false,
+            recent_uri: None,
+        },
+        text_byte_limit: 1024,
+        render_document: false,
+        pdf_page: 0,
+        media_size: MediaPreviewSize::new(640, 800),
+        model_palette: crate::services::ModelPalette::default(),
+        archive_password: archive_password
+            .map(|password| crate::services::SecretString::new(password.to_owned())),
+        pdf_password: password
+            .map(|password| crate::services::SecretString::new(password.to_owned())),
+    };
+    let provider = LocalPreviewProvider::new(Rc::new(|| MediaPreviewBackend::Software));
+    let context = glib::MainContext::default();
+    let _owner = context.acquire().expect("main context owner");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let events_for_emit = events.clone();
+    let calls_for_stub = renderer_calls.clone();
+    let _handle = provider.load_with_renderer(
+        request,
+        Rc::new(move |event| events_for_emit.borrow_mut().push(event)),
+        move |_, operation, _, _, _| {
+            calls_for_stub.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let crate::sandbox::ParseOperation::PreviewPdf { password, .. } = operation else {
+                panic!("PDF previews must request a PDF render");
+            };
+            match password.as_ref().map(crate::services::SecretString::expose) {
+                None => Err(crate::sandbox::WIRE_PDF_NEEDS_PASSWORD.to_owned()),
+                Some("strata-pdf-fixture") => Ok(crate::sandbox::ParseOutput {
+                    data: vec![137, 80, 78, 71],
+                    page: 0,
+                    pages: 1,
+                    text_layer: None,
+                }),
+                Some(_) => Err(crate::sandbox::WIRE_PDF_WRONG_PASSWORD.to_owned()),
+            }
+        },
+    );
+    context.block_on(async {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while events.borrow().is_empty() && std::time::Instant::now() < deadline {
+            glib::timeout_future(Duration::from_millis(1)).await;
+        }
+    });
+    events.borrow().clone()
+}
+
+#[test]
+fn locked_pdf_preview_prompts_unlocks_and_never_caches() {
+    crate::test_support::gtk_test(
+        "adapters::local_preview::tests::locked_pdf_preview_prompts_unlocks_and_never_caches",
+        || {
+            use crate::services::INCORRECT_PDF_PASSWORD;
+            use std::sync::atomic::Ordering;
+
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+            let events = preview_locked_pdf(None, None, &calls);
+            assert_eq!(events.len(), 1);
+            let PreviewEvent::NeedsPdfPassword { entry, .. } = &events[0] else {
+                panic!("expected a PDF password request, got {:?}", events[0]);
+            };
+            assert_eq!(entry.native_name, "locked.pdf");
+
+            for password in ["wrong", ""] {
+                let events = preview_locked_pdf(Some(password), None, &calls);
+                assert_eq!(events.len(), 1);
+                let PreviewEvent::Failed { message, .. } = &events[0] else {
+                    panic!(
+                        "expected an incorrect-password failure, got {:?}",
+                        events[0]
+                    );
+                };
+                assert_eq!(message, INCORRECT_PDF_PASSWORD);
+            }
+
+            let events = preview_locked_pdf(Some("strata-pdf-fixture"), None, &calls);
+            assert_eq!(events.len(), 1);
+            let PreviewEvent::Ready(preview) = &events[0] else {
+                panic!("expected an unlocked PDF, got {:?}", events[0]);
+            };
+            let PreviewContent::Pdf { pages, .. } = &preview.content else {
+                panic!("expected PDF content, got {:?}", preview.content);
+            };
+            assert_eq!(*pages, 1);
+
+            // An archive password must never satisfy a PDF prompt.
+            let events = preview_locked_pdf(None, Some("strata-pdf-fixture"), &calls);
+            assert_eq!(events.len(), 1);
+            assert!(
+                matches!(&events[0], PreviewEvent::NeedsPdfPassword { .. }),
+                "archive secrets must not unlock PDFs, got {:?}",
+                events[0]
+            );
+
+            // The unlocked render above must not have been cached: revisiting
+            // without a password renders nothing and calls the renderer again.
+            let calls_before = calls.load(Ordering::Relaxed);
+            let events = preview_locked_pdf(None, None, &calls);
+            assert_eq!(events.len(), 1);
+            assert!(
+                matches!(&events[0], PreviewEvent::NeedsPdfPassword { .. }),
+                "revisiting a locked PDF must prompt again, got {:?}",
+                events[0]
+            );
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                calls_before + 1,
+                "unlocked renders must bypass the preview cache"
+            );
+        },
+    );
+}
+
 #[test]
 fn corrupt_encrypted_zip_preview_reports_a_failed_preview() {
     crate::test_support::gtk_test(
@@ -1258,6 +1407,7 @@ fn unsupported_archive_preview_reports_unsupported_format() {
                 media_size: MediaPreviewSize::new(640, 800),
                 model_palette: crate::services::ModelPalette::default(),
                 archive_password: None,
+                pdf_password: None,
             };
             let provider = LocalPreviewProvider::new(Rc::new(|| MediaPreviewBackend::Software));
             let context = glib::MainContext::default();

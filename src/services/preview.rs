@@ -66,6 +66,9 @@ pub struct PreviewRequest {
     pub media_size: MediaPreviewSize,
     pub model_palette: super::ModelPalette,
     pub archive_password: Option<SecretString>,
+    /// Kept separate from [`PreviewRequest::archive_password`]: a PDF unlock
+    /// must never satisfy an archive prompt or vice versa.
+    pub pdf_password: Option<SecretString>,
 }
 
 /// A decode request, not a playable file. Only the sandbox may open `path`.
@@ -162,6 +165,7 @@ pub struct Preview {
 }
 
 pub(crate) const INCORRECT_ARCHIVE_PASSWORD: &str = "The password is incorrect.";
+pub(crate) const INCORRECT_PDF_PASSWORD: &str = "The PDF password is incorrect.";
 
 #[derive(Clone, Debug)]
 pub enum PreviewEvent {
@@ -176,6 +180,13 @@ pub enum PreviewEvent {
         message: String,
     },
     NeedsPassword {
+        request_id: PreviewRequestId,
+        entry: FileEntry,
+    },
+    /// A PDF refused to open without a password. Separate from
+    /// [`PreviewEvent::NeedsPassword`] so the UI renders the PDF prompt
+    /// without sniffing filenames or message text.
+    NeedsPdfPassword {
         request_id: PreviewRequestId,
         entry: FileEntry,
     },

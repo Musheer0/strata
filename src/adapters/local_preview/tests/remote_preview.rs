@@ -31,6 +31,7 @@ fn request(path: &Path, name: &str) -> PreviewRequest {
         media_size: MediaPreviewSize::new(640, 800),
         model_palette: crate::services::ModelPalette::default(),
         archive_password: None,
+        pdf_password: None,
     }
 }
 
@@ -203,6 +204,9 @@ fn uri_images_stage_private_inputs_and_remove_them_after_rendering() {
                             assert_eq!(message, "decoder failure");
                         }
                         PreviewEvent::NeedsPassword { .. } => panic!("no password prompt expected"),
+                        PreviewEvent::NeedsPdfPassword { .. } => {
+                            panic!("no password prompt expected")
+                        }
                         PreviewEvent::Progress { .. } => panic!("no model progress expected"),
                     }
                     let path = staged_path

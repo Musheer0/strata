@@ -62,6 +62,7 @@ fn model_requests_reuse_only_matching_size_and_palette_without_ui_state() {
                 media_size: MediaPreviewSize::new(width, 200),
                 model_palette: palette,
                 archive_password: None,
+                pdf_password: None,
             },
             Rc::new(move |event| emit.borrow_mut().push(event)),
             move |_, operation, _, _, _| {

@@ -22,3 +22,16 @@ The package contains only `[Content_Types].xml`, `_rels/.rels`,
 `text.pdf` is a hand-written minimal PDF (single Helvetica text stream, no
 compression) whose two text lines let the quick preview exercise its text
 layer: glyph hit-testing, drag selection, and copy.
+
+# Password-protected PDF fixture
+
+`locked.pdf` is `text.pdf` encrypted with qpdf 12.4.1 (AES-256, R6):
+
+```bash
+qpdf --encrypt strata-pdf-fixture strata-pdf-fixture 256 \
+  -- tests/fixtures/documents/text.pdf tests/fixtures/documents/locked.pdf
+```
+
+Both the user and owner passwords are `strata-pdf-fixture`; use the wrong
+password `not-the-fixture-password` for negative tests. Regenerate with the
+same command if the fixture ever needs rebuilding.
