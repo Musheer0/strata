@@ -14,6 +14,9 @@ user-defined names, or the locale environment inherited by other programs.
   using rust-i18n's multilingual `_version: 2` format.
 - `data/locales/dates.json`: month/weekday names and date presentation patterns,
   also multilingual. ISO 8601 remains language-independent.
+- `data/locales/installer.json`: multilingual setup screens and status messages
+  shared with the standalone Bash installer. After editing, regenerate its
+  embedded catalog with `python3 scripts/installer_messages.py --write`.
 
 Locales are `en`, `fr`, `de`, `es`, `ja`, `pt-BR`, `ko`, `vi`, `it`, `ru`, and
 `zh-CN`.
@@ -27,8 +30,13 @@ use and their English value is the plain word: `completion.complete`,
 `settings_keywords.<target id>` keys hold space-separated search synonyms for a
 Settings search target; their English value is the English alias list. All catalogs
 are build inputs: `build.rs` embeds them as static tables served by the
-`i18n::Catalogs` backend, so changing only a translation still rebuilds them. Do not
-point `i18n!` at `data/locales`; its per-message initializer needs megabytes of
+`i18n::Catalogs` backend, so changing only a translation still rebuilds them.
+The installer embeds its messages from the same rust-i18n source catalog so it
+needs no translation files, Python, or installed Strata binary at runtime. It
+uses the system locale with the same `LANGUAGE` and POSIX precedence rules as the
+application; the saved application language does not affect installation.
+
+Do not point `i18n!` at `data/locales`; its per-message initializer needs megabytes of
 stack in unoptimized builds and overflows worker and test threads.
 
 ## Adding or changing text

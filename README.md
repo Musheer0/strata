@@ -69,14 +69,26 @@ Arch Linux and Omarchy are the primary supported environments. Current binaries 
 ### Interactive installation
 
 The interactive installer detects the Linux architecture, glibc version, Arch
-Linux, and Omarchy 3 or 4. It installs the latest verified stable release and
-offers optional desktop-menu, default-folder-handler, "Open file location", system
-file chooser, encrypted-volume unlock, SMB, broader image/RAW, and Omarchy keybind
-integration:
+Linux, and Omarchy 3 or 4. Choose the recommended installation for Strata and its
+application launcher without changing existing defaults, or customize the desktop,
+file chooser, encrypted-volume unlock, SMB, image/RAW, and shortcut integrations.
+Only options supported by your system are offered:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lgse/strata/main/install.sh | bash
 ```
+
+Use the arrow keys and Enter to choose a setup; Space toggles custom options.
+Small or basic terminals use numbered choices instead. The original block-art logo
+uses its Tokyo Night pale-blue, blue, and violet brand colors; other colors follow
+your terminal palette. `NO_COLOR=1` disables colors. A continuous dithered progress
+bar shows actual transfer percentages, with a spinner when the total is unknown.
+Selected packages share one package-manager transaction, with its normal
+confirmation. Pass `--verbose` for detailed download and verification output;
+failures always show diagnostics.
+Integration results always remain visible, including service-restart notices.
+Detailed logs are retained for failures, warnings, and integration notices; package
+operations are logged without recording terminal password input.
 
 The installer shows every privileged package operation before asking to run it.
 It verifies both the published SHA-256 digest and GitHub Actions provenance before
@@ -93,10 +105,12 @@ curl -fsSL https://raw.githubusercontent.com/lgse/strata/main/install.sh \
       --with-smb \
       --with-raw \
       --with-desktop-entry \
-      --with-folder-association \
-      --with-omarchy-keybinds \
-      --with-udiskie-unlock
+      --with-folder-association
 ```
+
+Add `--with-omarchy-keybinds` only on Omarchy 3 or 4. Add
+`--with-udiskie-unlock` only when `udiskie` is already installed on an Arch-based
+system. Unsupported explicit options are rejected before installation begins.
 
 Each `--with-*` flag implies `--non-interactive`, and folder association implies
 the desktop entry and `--with-file-manager`. Use `--with-file-manager` by itself
@@ -740,6 +754,7 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Dee
 - [Preview panel and column layout](docs/preview-panel-layout.md)
 - [10xer mode](docs/10xer-mode.md)
 - [Architecture principles](docs/architecture.md)
+- [Filesystem compatibility](docs/filesystem-compatibility.md)
 - [Preview sandbox](docs/preview-sandbox.md)
 - [Hardened configuration](docs/hardened-configuration.md)
 - [Performance baseline](docs/performance-baseline.md)

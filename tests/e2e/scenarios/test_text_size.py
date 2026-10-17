@@ -100,9 +100,13 @@ def test_settings_text_size_keeps_switches_inside_the_page(strata, request):
 
 def _reveal_page_control(strata, name, role="button"):
     node = strata.wait(lambda: strata.window.find(role=role, name=name, rendered=False), f"{name} control")
-    scroll = next(parent for parent in node.ancestors() if parent.role == "scroll pane")
 
     def revealed():
+        nonlocal node
+        # Accessibility handles can report stale bounds while the page
+        # scrolls, so resolve the control and its scroller fresh each round.
+        node = strata.window.find(role=role, name=name, rendered=False) or node
+        scroll = next(parent for parent in node.ancestors() if parent.role == "scroll pane")
         if _inside_scroll_view(node):
             return True
         viewport = scroll.screen_bounds()
@@ -116,11 +120,13 @@ def _reveal_page_control(strata, name, role="button"):
         # Large text makes General several viewports tall. Traverse distant
         # sections faster, then use single notches so we cannot skip the control.
         distance = max(below, above)
-        clicks = min(12, max(1, int(distance / viewport.height) * 3))
+        clicks = min(40, max(1, int(distance / viewport.height) * 3))
         strata.pointer.scroll(at, clicks=clicks, down=below > 0)
         return False
 
-    strata.wait(revealed, f"reachable {name} control")
+    # At 32 px the page is tens of viewports tall; batched wheel clicks need
+    # longer than the default budget to cross it.
+    strata.wait(revealed, f"reachable {name} control", timeout=45)
     return strata.settle(node)
 
 

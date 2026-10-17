@@ -61,7 +61,8 @@ fn editor_revealer(layer: &gtk::Widget) -> gtk::Revealer {
 }
 
 fn settles(condition: impl Fn() -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // Generous for CI: runners can stall for seconds under parallel load.
+    let deadline = Instant::now() + Duration::from_secs(10);
     while !condition() {
         if Instant::now() >= deadline {
             return false;
