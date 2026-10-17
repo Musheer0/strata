@@ -50,6 +50,7 @@ class QualityCiTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         for patcher in (patch.object(quality, "ISOLATED_TEST", "a"),
+                        patch.object(quality, "SHARDS", 2),
                         patch.dict(quality.os.environ, STRATA_QUALITY_COMMIT="fixture"),
                         patch.object(quality, "test_source_key", return_value="source"),
                         patch.object(quality, "image_key", return_value="image")):

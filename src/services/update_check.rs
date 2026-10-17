@@ -23,6 +23,8 @@ use super::{
 const API_ROOT: &str = "https://api.github.com/repos/lgse/strata/releases";
 const COMMITS_ROOT: &str = "https://api.github.com/repos/lgse/strata/commits";
 const RELEASES_URL: &str = "https://github.com/lgse/strata/releases";
+/// GitHub does not count requests to this endpoint against the API rate limit.
+const CONNECTION_TEST_URL: &str = "https://api.github.com/rate_limit";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Minimum interval between automatic checks against the same channel.
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -132,6 +134,18 @@ fn request_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, ureq::Er
         .header("User-Agent", "strata-file-manager")
         .call()
         .and_then(|mut response| response.body_mut().read_json::<T>())
+}
+
+/// Reaches the update server the way an update check does, without using its rate limit.
+pub(super) fn test_connection() -> Result<(), NetworkError> {
+    agent()
+        .get(CONNECTION_TEST_URL)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "strata-file-manager")
+        .call()
+        .map(drop)
+        .map_err(|error| NetworkError::from_ureq(&error))
 }
 
 /// Converts a GitHub API release into [`release_channel`]'s pure

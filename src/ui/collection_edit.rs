@@ -197,7 +197,9 @@ pub(super) fn begin(
     let activated = field.connect_activate(move |field| activate(field));
     let focus = gtk::EventControllerFocus::new();
     let focus_handler = focus.connect_leave(move |focus| {
-        if let Some(field) = focus.widget().and_downcast::<gtk::Entry>() {
+        if let Some(field) = focus.widget().and_downcast::<gtk::Entry>()
+            && !kept_focus_in_inactive_window(&field)
+        {
             submit(&field);
         }
     });
@@ -257,6 +259,18 @@ pub(super) fn begin(
         }
     });
     true
+}
+
+fn kept_focus_in_inactive_window(field: &gtk::Entry) -> bool {
+    field
+        .root()
+        .and_downcast::<gtk::Window>()
+        .is_some_and(|window| {
+            !window.is_active()
+                && GtkWindowExt::focus(&window).is_some_and(|focus| {
+                    focus == *field.upcast_ref::<gtk::Widget>() || focus.is_ancestor(field)
+                })
+        })
 }
 
 pub(super) fn rename_stem_end(name: &str) -> i32 {

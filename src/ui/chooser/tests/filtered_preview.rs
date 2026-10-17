@@ -192,6 +192,38 @@ fn space_toggles_the_selected_search_result_in_open_and_save_choosers() {
                         gtk::gdk::Key::space,
                         gtk::gdk::ModifierType::SHIFT_MASK
                     ));
+                    let space_is_typed = |field: &str| {
+                        assert!(
+                            state
+                                .view
+                                .selected_search_results()
+                                .is_some_and(|hits| !hits.is_empty()),
+                            "{mode:?}: the hit stays selected in the {field}"
+                        );
+                        assert!(
+                            !press(
+                                &window_keys,
+                                gtk::gdk::Key::space,
+                                gtk::gdk::ModifierType::empty()
+                            ),
+                            "{mode:?}: the {field} types Space with a hit selected"
+                        );
+                    };
+                    if let Some(filename) = state.filename.as_ref() {
+                        assert!(filename.grab_focus());
+                        space_is_typed("file name");
+                    }
+                    state.view.begin_location_edit();
+                    wait_until(|| state.view.location_has_focus());
+                    space_is_typed("location");
+                    state.view.cancel_location_edit();
+                    assert!(
+                        find(state.window.upcast_ref(), &|widget| {
+                            widget.is_mapped() && widget.has_css_class("preview-pane")
+                        })
+                        .is_none()
+                    );
+                    field.grab_focus_without_selecting();
                     let capture = |name| {
                         if mode == BrowserMode::Columns
                             && !save

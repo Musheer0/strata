@@ -207,10 +207,10 @@ CI's **Quality build and lint** job runs formatting and Clippy, then compiles
 `cargo test --locked --all-targets --all-features --no-run` once. It exports only
 test executables and a plan, not Cargo caches. `scripts/quality_ci.py` collects
 each libtest inventory, including the explicitly ignored tests, and assigns every
-entry to one of two shards. Timing hints in `scripts/quality-durations.json`
+entry to one of four shards. Timing hints in `scripts/quality-durations.json`
 come from successful GTK child runs in
 [run 34560353003](https://github.com/lgse/strata/actions/runs/34560353003).
-Tests are balanced longest-first across both shards; unknown tests receive a
+Tests are balanced longest-first across the shards; unknown tests receive a
 one-second weight and always participate. Timing hints are not an allowlist.
 The deferred-scroll timing was refreshed to 1.32 seconds from
 [run 34811363582](https://github.com/lgse/strata/actions/runs/34811363582).
@@ -243,7 +243,7 @@ To reproduce the handoff locally using the same pinned container:
 
 ```bash
 STRATA_QUALITY_TASK=build ./scripts/quality.sh test
-for shard in 0 1; do
+for shard in 0 1 2 3; do
   STRATA_QUALITY_TASK=shard STRATA_QUALITY_SHARD="$shard" ./scripts/quality.sh test
 done
 python3 scripts/quality_ci.py verify
@@ -566,9 +566,15 @@ for a workflow that does not have a mutation yet.
 
 ## In CI
 
+The E2E suite does not run on pull requests or pushes. Run it on demand from
+**Actions → E2E → Run workflow**, choosing the branch to test, or with
+`gh workflow run e2e.yml --ref <branch>`. Enable
+`require_published_environments` to bypass the fast dependency cache and require
+verified published base images.
+
 ### Three-minute critical path
 
-`.github/workflows/ci.yml` has three E2E stages:
+`.github/workflows/e2e.yml` has three E2E stages:
 
 1. **E2E build and plan** restores BuildKit layers for the pinned native/Python
    dependencies, Rust toolchain, and compiled `Cargo.lock` dependencies. It
@@ -582,7 +588,7 @@ for a workflow that does not have a mutation yet.
    xdist workers. Shards do not start BuildKit, contact a registry, restore Cargo
    caches, compile, or install packages. Every runner uses
    the same pinned rendering packages and baselines as a local canonical run.
-3. **End-to-end GUI suite** retains the existing required-check name. It requires
+3. **End-to-end GUI suite** aggregates the run. It requires
    every dependency to succeed, verifies that all planned node IDs passed setup,
    call, and teardown exactly once. Timing is **informational**, with a three-minute
    performance target—not a pass/fail condition. From build-job creation through
@@ -654,8 +660,8 @@ checksum, and plan checksum. The runtime image's input label must match too; it 
 by an arbitrary host binary or an artifact from another run.
 
 `Warm E2E dependencies` publishes the full dependency cache in a separate workflow,
-with a 30-minute bootstrap allowance: daily, on image/dependency changes on main
-and PRs, and on manual dispatch. PRs warm only their own branch-scoped cache.
+with a 30-minute bootstrap allowance: daily, on image/dependency changes on main,
+and on manual dispatch. Dispatch it on a branch to warm that branch's cache.
 The timed build restores a BuildKit local-cache directory through the cache action's
 segmented transfer path, keyed by image inputs, manifests, ignore rules, and UID/GID.
 BuildKit still validates content-addressed dependency records before reusing them.
@@ -780,7 +786,7 @@ To collect the current inventory inside the canonical container:
 ```
 
 For the exact CI binary, use a disposable checkout at the commit in its metadata
-(a PR normally tests the merge commit). Download `e2e-bundle-<attempt>` into
+(the head of the dispatched branch). Download `e2e-bundle-<attempt>` into
 `target/e2e-bundle`, build the `runtime` target with the invoking UID/GID, and run
 (use `docker` instead of `podman` if appropriate):
 

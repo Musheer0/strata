@@ -208,6 +208,12 @@ Fedora; `gvfs-daemons` on Debian/Ubuntu). Without that backend, removable drives
 may be absent from Devices. SMB support remains optional. Phones need additional
 backends; see [Connecting phones](#connecting-phones).
 
+If previews, thumbnails, network locations, or drives don't work after installation,
+open **Settings → Diagnostics** and select **Run**. It tests each of these features,
+names any missing package with an install command for your distribution that
+you can copy or run in your terminal, and
+**Copy report** copies the results for a bug report.
+
 #### 2. Download and verify
 
 From the [latest release](https://github.com/lgse/strata/releases/latest), download the `.tar.gz` matching `$target` and its identically named `.sha256` file over HTTPS. Then verify its digest:

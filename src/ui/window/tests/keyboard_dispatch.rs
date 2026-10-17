@@ -1567,6 +1567,10 @@ fn tenxer_entries_menus_and_reference_keep_their_keys() {
                 assert_eq!(directory_names(fixture._directory.path()), names);
                 assert!(fixture.view.location_has_focus());
             }
+            assert!(
+                !fixture.press(Key::asciitilde, ModifierType::empty()),
+                "~ is typed into the location"
+            );
             assert!(!russian_tilde(), "Ё is typed into the location");
             assert!(!fixture.shortcuts.reference_is_open());
             assert!(fixture.view.location_has_focus());

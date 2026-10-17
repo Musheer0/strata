@@ -691,6 +691,30 @@ fn wait_for_renderer_reporting(
     }
 }
 
+const SANDBOX_PATH: &str = match option_env!("STRATA_SANDBOX_PATH") {
+    Some(path) => path,
+    None => "/usr/bin",
+};
+pub(crate) const PRLIMIT: &str = match option_env!("STRATA_SANDBOX_PRLIMIT") {
+    Some(path) => path,
+    None => "/usr/bin/prlimit",
+};
+
+/// Resolves a helper tool the way the sandbox's `PATH` does. The sandbox root
+/// is mounted at its host path, so the host file is the one helpers run.
+pub(crate) fn sandbox_tool(name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    SANDBOX_PATH
+        .split(':')
+        .filter(|directory| !directory.is_empty())
+        .map(|directory| Path::new(directory).join(name))
+        .find(|candidate| {
+            fs::metadata(candidate).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+}
+
 fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
     let mut command = Command::new(bwrap);
     command.args([
@@ -700,7 +724,7 @@ fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
         "--clearenv",
         "--setenv",
         "PATH",
-        option_env!("STRATA_SANDBOX_PATH").unwrap_or("/usr/bin"),
+        SANDBOX_PATH,
         "--setenv",
         "HOME",
         "/nonexistent",
@@ -816,7 +840,7 @@ fn sandbox_command(
     command.arg("--");
     if !operation.is_media() {
         command
-            .arg(option_env!("STRATA_SANDBOX_PRLIMIT").unwrap_or("/usr/bin/prlimit"))
+            .arg(PRLIMIT)
             .arg(format!("--as={ADDRESS_SPACE_LIMIT_BYTES}"))
             .arg("--cpu=10")
             .arg(format!(

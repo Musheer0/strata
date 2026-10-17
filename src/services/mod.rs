@@ -2,6 +2,7 @@
 
 pub(crate) mod actions;
 pub(crate) mod camera_preview;
+pub(crate) mod diagnostics;
 mod document;
 pub(crate) mod document_media;
 pub(crate) mod docx;

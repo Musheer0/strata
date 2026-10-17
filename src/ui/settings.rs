@@ -25,6 +25,7 @@ mod tests;
 mod about;
 mod actions;
 mod bindings;
+mod diagnostics;
 mod exclusions;
 mod general;
 mod search;
@@ -875,6 +876,7 @@ pub fn build_layer(
     let (general, responsive_setting_rows, responsive_activation_rows) =
         general_page(preferences.clone());
     stack.add_named(&general, Some("general"));
+    stack.add_named(&diagnostics::diagnostics_page(), Some("diagnostics"));
     stack.add_named(&about_page(), Some("about"));
     // Heavy pages build on first selection, never during startup: the
     // Updates page spawns package-manager detection plus release-note
@@ -909,8 +911,9 @@ pub fn build_layer(
     // Navigation entries register as their buttons are created, so the
     // responsive panel compacts correctly even with lazy pages.
     let responsive_for_nav = responsive_panel.clone();
-    let built: Rc<RefCell<std::collections::HashSet<&'static str>>> =
-        Rc::new(RefCell::new(["general", "about"].into_iter().collect()));
+    let built: Rc<RefCell<std::collections::HashSet<&'static str>>> = Rc::new(RefCell::new(
+        ["general", "diagnostics", "about"].into_iter().collect(),
+    ));
     let dismiss_hooks = DismissHooks::default();
     let nav_buttons: Rc<RefCell<Vec<(gtk::Button, &'static str)>>> =
         Rc::new(RefCell::new(Vec::new()));
@@ -3045,7 +3048,7 @@ struct NavigationEntry {
 
 /// Settings pages in navigation order. Search finds page titles here and routes
 /// to the button built from each entry.
-static NAVIGATION: [NavigationEntry; 5] = [
+static NAVIGATION: [NavigationEntry; 6] = [
     NavigationEntry {
         page: "general",
         label: "General",
@@ -3072,6 +3075,13 @@ static NAVIGATION: [NavigationEntry; 5] = [
         label: "Updates",
         subtitle: "Channel, release notes",
         icon: icons::DOWNLOADS,
+        accessible_label: None,
+    },
+    NavigationEntry {
+        page: "diagnostics",
+        label: "Diagnostics",
+        subtitle: "Troubleshooting",
+        icon: icons::STETHOSCOPE,
         accessible_label: None,
     },
     NavigationEntry {

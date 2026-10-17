@@ -2236,6 +2236,11 @@ impl BrowserView {
             })
     }
 
+    pub(in crate::ui) fn search_result_for_space(&self) -> Option<FileEntry> {
+        self.filter_focus()?;
+        self.selected_search_result()
+    }
+
     pub(super) fn connect_search_selection_changed(&self, handler: Rc<dyn Fn()>) {
         self.state
             .search_selection_handlers

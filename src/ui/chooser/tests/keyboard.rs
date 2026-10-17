@@ -85,6 +85,20 @@ impl Chooser {
             .emit_by_name::<bool>("key-pressed", &[&key, &0u32, &modifiers])
     }
 
+    fn press_reference(&self, key: Key) -> bool {
+        let panel = widget_with_class(self.state.window.upcast_ref(), "shortcut-reference-panel")
+            .expect("reference panel");
+        let controllers = panel.observe_controllers();
+        (0..controllers.n_items())
+            .find_map(|index| {
+                controllers
+                    .item(index)
+                    .and_downcast::<gtk::EventControllerKey>()
+            })
+            .expect("reference key controller")
+            .emit_by_name::<bool>("key-pressed", &[&key, &0u32, &ModifierType::empty()])
+    }
+
     fn focus_files(&self) {
         self.state.view.browser().focus_active();
         wait_until(|| self.state.view.item_view_has_focus());
@@ -476,6 +490,49 @@ fn escape_dismisses_one_interaction_before_cancelling_and_the_toggle_keeps_the_r
             chooser.press(Key::Escape);
             assert!(chooser.cancelled());
             assert_eq!(chooser.responses.get(), 1);
+        },
+    );
+}
+
+#[test]
+fn chooser_shortcuts_stay_off_while_the_reference_stays_open_outside_tenxer() {
+    crate::test_support::gtk_test(
+        "ui::chooser::tests::keyboard::chooser_shortcuts_stay_off_while_the_reference_stays_open_outside_tenxer",
+        || {
+            let chooser = Chooser::open(single_file(), BrowserMode::List, &["a.txt", "folder/"]);
+            chooser.focus_files();
+            assert!(chooser.press(Key::F1));
+            wait_until(|| chooser.reference_search_focused());
+            PreferenceManager::shared().set_tenxer_mode(false);
+            wait_until(|| !chooser.footer_visible());
+            assert!(chooser.reference_visible());
+            let browser = chooser.state.view.browser();
+            let location = browser.active_location();
+            let (none, control, alt) = (
+                ModifierType::empty(),
+                ModifierType::CONTROL_MASK,
+                ModifierType::ALT_MASK,
+            );
+            for (key, modifiers) in [
+                (Key::F5, none),
+                (Key::h, control),
+                (Key::period, control),
+                (Key::_2, control),
+                (Key::Up, alt),
+                (Key::Left, alt),
+                (Key::Home, alt),
+            ] {
+                assert!(
+                    !chooser.press_with(key, modifiers),
+                    "{modifiers:?}+{key:?} acted behind the reference"
+                );
+            }
+            assert_eq!(chooser.state.view.view_mode(), BrowserMode::List);
+            assert_eq!(browser.active_location(), location);
+            assert!(!chooser.press(Key::Escape), "the chooser took Esc");
+            assert!(chooser.press_reference(Key::Escape));
+            assert!(!chooser.reference_visible());
+            assert!(chooser.open_request(), "Esc cancelled the request");
         },
     );
 }

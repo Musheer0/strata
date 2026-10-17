@@ -332,6 +332,12 @@ const TARGETS: &[Target] = &[
         aliases: "what new changes changelog",
     },
     Target {
+        id: "diagnostics",
+        page: "diagnostics",
+        title: "Run diagnostics",
+        aliases: "troubleshoot troubleshooting problems health check dependencies missing packages report bug sandbox bubblewrap ffmpeg gstreamer gvfs sftp smb udisks portal",
+    },
+    Target {
         id: "version",
         page: "about",
         title: "Version information",

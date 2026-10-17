@@ -66,8 +66,9 @@ Shortcuts follow the key's label first, then its physical position:
 ## Input methods and Chinese layouts
 
 - **Chinese keyboards use the US layout.** The XKB `cn` layout is US, so every
-  shortcut is the US one. Mandarin is typed with a pinyin input method, such as
-  fcitx5 or IBus, running on that layout.
+  shortcut is the US one. Chinese is typed with an input method, such as fcitx5
+  or IBus, running on that layout: pinyin for Simplified Chinese, and Zhuyin
+  (Bopomofo), Cangjie or Quick for Traditional Chinese.
 - **An unfinished composition sees each key first.** While the focused text
   field shows an input method's unfinished text (the preedit, such as pinyin
   waiting for a candidate), each key goes to the input method before any Strata
@@ -85,15 +86,34 @@ Shortcuts follow the key's label first, then its physical position:
   Strata (`GTK_IM_MODULE=fcitx` or `ibus`, and every input method on X11),
   GTK's own dead keys, and the Compose key would otherwise get each key after
   Strata's handlers.
+- **Input method switch keys reach the focused text field.** **Ctrl+Space**
+  (fcitx5), **Super+Space** (IBus), **Shift** and **Shift+Space** go to the input
+  method in every text field, the F1 search included. Strata's own
+  **Ctrl+Space** toggles selection only in a file list.
+- **Zhuyin starts syllables with digit and punctuation keys.** Zhuyin input
+  methods, such as chewing, type initials and finals on the digit row and on
+  `-` `,` `.` `/` `;`, and tones with 3, 4, 6, 7 and Space. Array30 and
+  Boshiamy codes use punctuation keys too. While a text field has focus, no
+  Strata command takes a plain digit or punctuation key, so the first key of a
+  syllable reaches the input method and the composition then sees the rest. New
+  bindings on these keys must keep it that way.
 - **Hanyu Pinyin with AltGr dead keys** (`cn(altgr-pinyin)`): AltGr+1 to
   AltGr+4 are the tone dead keys that type ā á ǎ à, AltGr+6 and Shift+AltGr+6
   are the ^ and ¨ dead keys, and AltGr+v types ü. These are text input, never
   digits: **Ctrl+1** and **t 1** use the digit keys without AltGr, as on US.
+- **Taiwanese** (`tw`) is US without AltGr. AltGr types characters for
+  Taiwanese Hokkien and Formosan languages, including combining marks and dead
+  keys on the digit row, which are never digits. The `indigenous` and
+  `saisiyat` variants type ʼ on the apostrophe key, and `saisiyat` types ː on the
+  semicolon key, which the layout fallback still reads as `;` for the 10xer
+  **;** chord.
 - **Type-to-search starts without the input method.** An input method composes
   only in a focused text field. A key typed in the file list starts
   type-to-search with the character the layout produced, so a pinyin letter
-  arrives as that Latin letter and a dead key starts nothing. To search with an
-  input method, open the filter with **Ctrl+F** (**f** in 10xer mode) and type
+  arrives as that Latin letter, a Zhuyin key as its digit or punctuation, and a
+  dead key starts nothing. Typing in the Open With list starts its search the
+  same way. To search with an input method, open the filter with **Ctrl+F**
+  (**f** in 10xer mode), or move into the Open With search field, and type
   there.
 
 ## Shortcut labels
@@ -297,8 +317,10 @@ field.
 Plain keys that only the fallback recognizes stay text where typing goes:
 type-to-search starts with the **þ** that Icelandic types on the US `/` key
 instead of opening an empty filter, and in 10xer mode the Russian **Ё** key
-reads as **~** but types **Ё** into the location bar or the F1 search instead
-of toggling the reference.
+reads as **~** but types **Ё** into the F1 search instead of closing the
+reference. In 10xer mode, text fields such as the location bar type **~**
+itself rather than opening the reference; only the open reference's search
+closes it on **~**.
 
 A focused cell of a document table follows the same rule for copy and select
 all. The table's key handler runs the cell's action, because it owns the

@@ -6133,6 +6133,57 @@ two-column presentation. */
   margin: -6px 4px 12px;
 }
 
+.settings-diagnostics-page .menu-heading {
+  font-size: 0.875em;
+  letter-spacing: 1.5px;
+  padding: 0;
+  margin: 36px 4px 12px;
+}
+
+.diagnostics-actions {
+  margin-top: 10px;
+}
+
+.diagnostics-command > entry.preview-command-entry {
+  padding-right: 72px;
+}
+
+.diagnostics-command-status.error {
+  color: @strata_danger;
+}
+
+.diagnostics-summary {
+  color: @strata_dim_text;
+  margin: 18px 4px 0;
+}
+
+.diagnostics-row {
+  min-height: 42px;
+  padding: 9px 18px;
+}
+
+.settings-group .diagnostics-row + .diagnostics-row {
+  border-top: 1px solid alpha(@strata_border, 0.55);
+}
+
+.diagnostics-status {
+  margin-top: 1px;
+}
+
+.diagnostics-message.problem {
+  color: @strata_danger;
+}
+
+.diagnostics-detail {
+  color: @strata_dim_text;
+  font-family: monospace;
+  font-size: 0.85em;
+}
+
+.diagnostics-fix {
+  margin-top: 4px;
+}
+
 .settings-group {
   background: mix(@strata_bg, @strata_muted, 0.25);
   border: 1px solid alpha(@strata_border, 0.55);
@@ -6650,6 +6701,16 @@ two-column presentation. */
   min-height: 36px;
   padding-top: 10px;
   padding-bottom: 10px;
+}
+
+.settings-dialog .diagnostics-system {
+  padding: 8px 0;
+}
+
+.settings-dialog .diagnostics-system .about-detail-row {
+  min-height: 0;
+  padding: 3px 18px;
+  border: none;
 }
 
 .settings-global-search {

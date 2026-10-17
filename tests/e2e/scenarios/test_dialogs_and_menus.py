@@ -598,7 +598,7 @@ def test_customize_takes_focus_and_a_single_escape_closes_it(strata, opener):
     assert not failures, f"{opener}:\n" + "\n".join(failures)
 
 
-def test_the_shortcut_reference_opens_and_closes(strata):
+def test_the_shortcut_reference_search_edits_with_chords_that_reach_nothing_else(strata):
     strata.keyboard.press("F1")
 
     strata.wait(
@@ -607,6 +607,16 @@ def test_the_shortcut_reference_opens_and_closes(strata):
     )
     for chord in ["Ctrl+Alt+Space", "Ctrl+Alt+← / →", "Ctrl+Alt+↑ / ↓", "Ctrl+Alt+M"]:
         assert strata.window.find(role="label", name=chord, rendered=False) is not None
+    search = strata.editable_field()
+    strata.keyboard.type_text("open tab")
+    strata.keyboard.press("ctrl+Left")
+    strata.keyboard.type_text("new ")
+    strata.wait(lambda: search.text == "open new tab", "Ctrl+Left to move by a word in the search")
+    strata.keyboard.press("ctrl+,")
+    strata.keyboard.type_text("x")
+    strata.wait(lambda: search.text == "open new xtab", "typing to stay in the reference after Ctrl+,")
+    assert strata.window.find(role="button", name="Close settings") is None, "Ctrl+, opened Settings"
+    assert strata.window.find(role="label", name="Keyboard shortcuts") is not None
     strata.keyboard.press("Escape")
     strata.wait(
         lambda: strata.window.find(role="label", name="Keyboard shortcuts") is None,

@@ -103,6 +103,7 @@ pub mod icons {
     pub const REFRESH: &str = "strata-refresh";
     pub const SHREDDER: &str = "strata-shredder";
     pub const SLIDERS: &str = "strata-sliders-horizontal";
+    pub const STETHOSCOPE: &str = "strata-stethoscope";
     pub const TERMINAL: &str = "strata-terminal";
     pub const TRASH: &str = "strata-trash";
     pub const TRIANGLE_ALERT: &str = "strata-triangle-alert";

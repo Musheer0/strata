@@ -431,7 +431,7 @@ fn preview_pool() -> &'static Pool {
     })
 }
 
-fn workers_supported() -> bool {
+pub(crate) fn workers_supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
     *SUPPORTED.get_or_init(|| {
         let supported = worker::supported();

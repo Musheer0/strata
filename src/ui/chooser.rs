@@ -2339,6 +2339,9 @@ fn install_shortcuts(
         {
             return glib::Propagation::Stop;
         }
+        if tenxer.reference_is_open() {
+            return glib::Propagation::Proceed;
+        }
         let browser = state.view.browser();
         let held = press.modifiers();
         let control = held.contains(ModifierType::CONTROL_MASK);
@@ -2478,7 +2481,7 @@ fn install_shortcuts(
             return glib::Propagation::Proceed;
         }
         if press.is(SPACE)
-            && let Some(entry) = state.view.selected_search_result()
+            && let Some(entry) = state.view.search_result_for_space()
         {
             if state.view.activate_directory_on_space() {
                 return glib::Propagation::Stop;

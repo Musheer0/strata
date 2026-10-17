@@ -91,6 +91,8 @@ fn ranks_exact_labels_aliases_and_small_typing_errors() {
         ("keybindings", "general", "hints"),
         ("render documents", "general", "render-documents"),
         ("markdown", "general", "render-documents"),
+        ("troubleshoot", "diagnostics", "diagnostics"),
+        ("ffmpeg", "diagnostics", "diagnostics"),
     ] {
         let matches = find_matches(&normalized(query));
         assert_eq!(matches.best_page, Some(page), "{query}");
@@ -496,6 +498,7 @@ fn every_page_row_is_registered_for_search() {
                     )
                     .0,
                 ),
+                ("diagnostics", super::super::diagnostics::diagnostics_page()),
                 ("about", super::super::about_page()),
             ];
             assert_eq!(

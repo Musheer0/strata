@@ -14,7 +14,7 @@ use candidates::Candidates;
 use chord_panel::ChordPanel;
 
 use super::keys::{
-    KeyPress, TEXT_EDITING,
+    KeyPress,
     bindings::{
         DOWN, ENTER_ANY_SHIFT, ESCAPE_ANY, FIRST_ITEM, FOCUS_NEXT, FOCUS_PREVIOUS, LAST_ITEM, LEFT,
         PAGE_DOWN, PAGE_UP, REFERENCE, REFERENCE_CATEGORIES, REFERENCE_LIST, REFERENCE_SEARCH,
@@ -863,6 +863,19 @@ impl ShortcutFooter {
                 .unwrap_or(glib::Propagation::Proceed)
         });
         footer.panel.add_controller(keys);
+        let unused = gtk::EventControllerKey::new();
+        super::keys::on_press(&unused, |_, press| {
+            if press.modifiers().intersects(
+                gdk::ModifierType::CONTROL_MASK
+                    | gdk::ModifierType::ALT_MASK
+                    | gdk::ModifierType::SUPER_MASK,
+            ) {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        footer.search.add_controller(unused);
         footer.close_prompt_on_focus_loss();
         footer.set_mode(mode);
         footer
@@ -1448,13 +1461,7 @@ impl ShortcutFooter {
         if (list_focused || (search_focused && scrolls_search)) && self.scroll_reference(press) {
             return Some(glib::Propagation::Stop);
         }
-        let commands = gdk::ModifierType::CONTROL_MASK
-            | gdk::ModifierType::ALT_MASK
-            | gdk::ModifierType::SUPER_MASK;
-        if search_focused
-            && (!press.modifiers().intersects(commands)
-                || TEXT_EDITING.iter().any(|(binding, _)| press.is(*binding)))
-        {
+        if search_focused {
             return Some(glib::Propagation::Proceed);
         }
         // No browsing shortcut may operate on files while the reference is open.
@@ -1547,13 +1554,17 @@ impl ShortcutFooter {
         true
     }
 
-    /// In a text field, a key that reads as `~` only through the layout fallback
-    /// types its own character instead.
     fn tilde_toggles(&self, press: &KeyPress, reference_open: bool) -> bool {
-        super::preferences::PreferenceManager::shared().tenxer_mode()
-            && press.is(TENXER_REFERENCE)
-            && (reference_open || !self.prompt_has_focus())
-            && !(press.used_fallback() && self.typing_has_focus())
+        if !super::preferences::PreferenceManager::shared().tenxer_mode()
+            || !press.is(TENXER_REFERENCE)
+        {
+            return false;
+        }
+        if reference_open {
+            !(press.used_fallback() && self.typing_has_focus())
+        } else {
+            !self.prompt_has_focus() && !self.typing_has_focus()
+        }
     }
 
     fn typing_has_focus(&self) -> bool {

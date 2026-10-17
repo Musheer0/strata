@@ -2,17 +2,6 @@ name: Warm E2E dependencies
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - tests/e2e/Dockerfile
-      - tests/e2e/requirements.txt
-      - tests/e2e/install-packages.sh
-      - tests/e2e/gtk/**
-      - .dockerignore
-      - .github/workflows/e2e-cache.yml
   schedule:
     - cron: '23 4 * * *'
   push:
@@ -31,12 +20,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-cache-warm-${{ github.event.pull_request.number || github.ref }}
+  group: e2e-cache-warm-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   warm:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     env:

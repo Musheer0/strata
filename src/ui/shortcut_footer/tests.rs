@@ -364,9 +364,9 @@ fn tenxer_reference_follows_the_active_map() {
             manager.set_show_keybinding_hints(true);
             let footer = ShortcutFooter::new(BrowserMode::Columns);
             footer.bind_preferences(&manager);
-            let entry = gtk::Entry::new();
+            let files = gtk::Button::new();
             let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            root.append(&entry);
+            root.append(&files);
             root.append(footer.widget());
             let overlay = gtk::Overlay::new();
             overlay.set_child(Some(&root));
@@ -376,7 +376,7 @@ fn tenxer_reference_follows_the_active_map() {
                 .default_height(480)
                 .build();
             window.present();
-            entry.grab_focus();
+            files.grab_focus();
             settle();
             let phrase = crate::ui::shortcut_reference::EXPERIMENTAL_LABEL;
             let none = gdk::ModifierType::empty();
@@ -615,7 +615,7 @@ fn tenxer_reference_follows_the_active_map() {
                 Some(glib::Propagation::Stop)
             );
             assert!(footer.scroll.has_focus());
-            entry.grab_focus();
+            files.grab_focus();
             assert!(
                 gtk::prelude::RootExt::focus(&window)
                     .is_some_and(|focus| focus == *footer.search.upcast_ref::<gtk::Widget>()
@@ -637,7 +637,7 @@ fn tenxer_reference_follows_the_active_map() {
                         .is_some_and(|widget| widget.has_css_class("search-backdrop")))
             );
             assert!(gtk::prelude::RootExt::focus(&window).is_some_and(|focus| {
-                focus == *entry.upcast_ref::<gtk::Widget>() || focus.is_ancestor(&entry)
+                focus == *files.upcast_ref::<gtk::Widget>() || focus.is_ancestor(&files)
             }));
             footer.handle_key(&press(gdk::Key::asciitilde, none));
             settle();
