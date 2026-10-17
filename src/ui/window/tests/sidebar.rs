@@ -143,10 +143,10 @@ fn modal_layers(overlay: &gtk::Overlay) -> usize {
 }
 
 #[test]
-fn add_network_location_stays_open_until_connecting_ends_and_pins_only_on_success() {
+fn connect_to_server_stays_open_until_connecting_ends_and_pins_only_on_success() {
     // Without a GVfs backend an SMB share fails quickly and never reaches the network.
     gtk_test_with_env(
-        "ui::window::tests::sidebar::add_network_location_stays_open_until_connecting_ends_and_pins_only_on_success",
+        "ui::window::tests::sidebar::connect_to_server_stays_open_until_connecting_ends_and_pins_only_on_success",
         [("GIO_USE_VFS", "local")],
         || {
             use super::super::load_pinned_places;
@@ -180,7 +180,7 @@ fn add_network_location_stays_open_until_connecting_ends_and_pins_only_on_succes
             find::<gtk::Button>(&network_row, |button| {
                 button
                     .child()
-                    .is_some_and(|child| find_label(&child, "Add network location…"))
+                    .is_some_and(|child| find_label(&child, "Connect to server…"))
             })
             .emit_clicked();
             assert_eq!(modal_layers(&overlay), 1, "the dialog opens");

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Add-network-location dialog, which stays open until the location opens or fails.
+//! Connect-to-server dialog, which stays open until the location opens or fails.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -40,7 +40,7 @@ pub(super) const MIN_CONNECTING: Duration = Duration::from_secs(1);
 pub(super) fn menu_extra() -> PlaceMenuExtra {
     PlaceMenuExtra {
         icon: assets::icons::PLUS,
-        label: "Add network location…",
+        label: "Connect to server…",
         action: show,
     }
 }
@@ -93,7 +93,7 @@ pub(super) fn show(state: &Rc<SidebarState>) {
 
     let layout = modal_layout(
         assets::icons::NETWORK,
-        &i18n::tr("Add network location"),
+        &i18n::tr("Connect to server"),
         &i18n::tr("Connect to a share or remote server"),
         &i18n::tr("Connect"),
     );
@@ -114,7 +114,7 @@ pub(super) fn show(state: &Rc<SidebarState>) {
     fields.append(&error);
     layout.body.append(&fields);
 
-    let pin = form_check_button(&i18n::tr("Add to sidebar"));
+    let pin = form_check_button(&i18n::tr("Pin to sidebar"));
     layout.body.append(&pin);
 
     let form = Rc::new(ConnectForm {
