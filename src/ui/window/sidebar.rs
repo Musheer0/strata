@@ -34,7 +34,9 @@ pub(in crate::ui) fn build_sidebar(
     state.bind_order();
     let bookmark_watch = super::bookmarks::watch_sidebar(&state);
     state.observe_navigation_and_trash();
-    let (handlers, mount_handler) = connect_device_changes(&state);
+    let network_watch = super::network_location::watch(&state);
+    let (mut handlers, mount_handler) = connect_device_changes(&state);
+    handlers.push(network_watch);
     let recent_setting_handler = connect_recent_setting_changes(&state);
     // Device discovery remains deferred to the window's first-paint callback.
     state.append_static_places();
@@ -196,6 +198,7 @@ impl SidebarState {
             keycaps: RefCell::new(Vec::new()),
             keycaps_shown: Cell::new(false),
             visible_pins: RefCell::new(Vec::new()),
+            network_pin: Rc::new(RefCell::new(super::network_location::PinTracker::default())),
             drop_feedback,
         })
     }

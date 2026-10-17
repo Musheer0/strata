@@ -538,8 +538,13 @@ fn mounting_entry_text(input: &str, sanitized: &str) -> Option<String> {
 }
 
 pub(super) enum TypedLocation {
-    Navigating,
-    Mounting { sanitized: String },
+    Navigating {
+        location: Location,
+    },
+    Mounting {
+        location: Location,
+        sanitized: String,
+    },
 }
 
 #[derive(Clone)]
@@ -1534,11 +1539,11 @@ impl ViewState {
         self.path_completion.dismiss();
         let input = self.location_entry.text();
         match self.open_typed_location(input.as_str(), None) {
-            Ok(TypedLocation::Navigating) => {
+            Ok(TypedLocation::Navigating { .. }) => {
                 self.location_stack.set_visible_child_name("breadcrumbs");
                 self.browser.focus_active();
             }
-            Ok(TypedLocation::Mounting { sanitized }) => {
+            Ok(TypedLocation::Mounting { sanitized, .. }) => {
                 if let Some(text) = mounting_entry_text(input.as_str(), &sanitized) {
                     self.location_entry.set_text(&text);
                 }
@@ -1565,25 +1570,31 @@ impl ViewState {
     ) -> Result<TypedLocation, LocationValidationError> {
         let (input, credentials) = credentials_from_location_input(input)?;
         self.pending_location_credentials.replace(credentials);
-        match self.browser.navigate_input_from(&input, base) {
-            Ok(()) => Ok(TypedLocation::Navigating),
+        match self.browser.navigate_input_located(&input, base) {
+            Ok(location) => Ok(TypedLocation::Navigating { location }),
             Err(LocationValidationError::NotMounted(location)) => {
                 let credentials = self.pending_location_credentials.take();
                 self.mount_then_navigate_with_credentials(
-                    location,
+                    location.clone(),
                     MountStrategy::EnclosingVolume,
                     credentials,
                 );
-                Ok(TypedLocation::Mounting { sanitized: input })
+                Ok(TypedLocation::Mounting {
+                    location,
+                    sanitized: input,
+                })
             }
             Err(LocationValidationError::Mountable(location)) => {
                 let credentials = self.pending_location_credentials.take();
                 self.mount_then_navigate_with_credentials(
-                    location,
+                    location.clone(),
                     MountStrategy::Mountable,
                     credentials,
                 );
-                Ok(TypedLocation::Mounting { sanitized: input })
+                Ok(TypedLocation::Mounting {
+                    location,
+                    sanitized: input,
+                })
             }
             Err(error) => {
                 self.pending_location_credentials.take();

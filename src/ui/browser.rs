@@ -5,7 +5,7 @@
 
 use crate::app::Browser;
 use crate::model::{FileEntry, Location};
-use crate::services::{FileSource, LoadHandle, OperationProvider};
+use crate::services::{FileSource, LoadHandle, LocationValidationError, OperationProvider};
 use crate::ui::browser::clipboard::{copy_locations, register_cut_view};
 use crate::ui::browser::collection::cancel_source;
 pub(super) use crate::ui::browser::columns::COLUMN_WIDTH;
@@ -13,7 +13,7 @@ use crate::ui::browser::columns::ColumnView;
 use crate::ui::browser::desktop::selected_terminal_location;
 use crate::ui::browser::inline_edit::{PendingEntryRename, PendingRename};
 use crate::ui::browser::location::{
-    MountCredentials, UnlockProgressSlot, is_breadcrumb_button_target,
+    MountCredentials, TypedLocation, UnlockProgressSlot, is_breadcrumb_button_target,
 };
 use crate::ui::browser::paths::{can_pin_entry, is_trash_location};
 use crate::ui::browser::peek::{PeekAnchor, PeekView};
@@ -1456,16 +1456,31 @@ impl BrowserView {
         self.state.cancel_location_edit();
     }
 
-    /// Opens a path or URI typed outside the location bar. A relative path
-    /// resolves against the open native folder; errors use the location bar's
-    /// dialog and leave the current folder open.
-    pub(in crate::ui) fn open_typed_location(&self, input: &str) {
+    /// Opens a path or URI typed outside the location bar, returning the target
+    /// location so the caller can act once it loads. A relative path resolves
+    /// against the open native folder; errors are returned for the caller to
+    /// present.
+    pub(in crate::ui) fn typed_location(
+        &self,
+        input: &str,
+    ) -> Result<Location, LocationValidationError> {
         let base = self
             .state
             .browser
             .active_location()
             .and_then(|location| location.native_path().map(std::path::Path::to_path_buf));
-        if let Err(error) = self.state.open_typed_location(input, base.as_deref()) {
+        match self.state.open_typed_location(input, base.as_deref()) {
+            Ok(TypedLocation::Navigating { location })
+            | Ok(TypedLocation::Mounting { location, .. }) => Ok(location),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Opens a path or URI typed outside the location bar. A relative path
+    /// resolves against the open native folder; errors use the location bar's
+    /// dialog and leave the current folder open.
+    pub(in crate::ui) fn open_typed_location(&self, input: &str) {
+        if let Err(error) = self.typed_location(input) {
             show_error_dialog(
                 &self.state.overlay,
                 &crate::i18n::tr("Unable to open location"),

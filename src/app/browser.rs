@@ -1117,16 +1117,17 @@ impl Browser {
 
     #[cfg(test)]
     pub fn navigate_input(self: &Rc<Self>, input: &str) -> Result<(), LocationValidationError> {
-        self.navigate_input_from(input, None)
+        self.navigate_input_located(input, None).map(|_| ())
     }
 
-    /// Like [`Self::navigate_input`], but a relative path resolves against the
-    /// native folder `base`. URIs and `~` paths are unaffected.
-    pub fn navigate_input_from(
+    /// Navigation for typed input, returning the location that was opened so a
+    /// caller can act once it loads (such as pinning it to a sidebar). A
+    /// relative path resolves against the native folder `base`.
+    pub fn navigate_input_located(
         self: &Rc<Self>,
         input: &str,
         base: Option<&Path>,
-    ) -> Result<(), LocationValidationError> {
+    ) -> Result<Location, LocationValidationError> {
         let input = input.trim();
         if input.is_empty() {
             return Err(LocationValidationError::Empty);
@@ -1139,8 +1140,8 @@ impl Browser {
             .active_location()
             .filter(|current| current.display_path() == input)
         {
-            self.navigate_validated(current, true);
-            return Ok(());
+            self.navigate_validated(current.clone(), true);
+            return Ok(current);
         }
         let location = match base.filter(|_| is_relative_path_input(input)) {
             Some(base) => Location::local(join_relative(base, input)),
@@ -1151,17 +1152,19 @@ impl Browser {
         }
         if location.native_path().is_some() {
             match self.source.validate_location(&location) {
-                Ok(()) => self.navigate(location),
+                Ok(()) => self.navigate(location.clone()),
                 Err(LocationValidationError::NotDirectory) => match location.parent() {
-                    Some(parent) => self.navigate_validated_inner(parent, false, vec![location]),
+                    Some(parent) => {
+                        self.navigate_validated_inner(parent, false, vec![location.clone()])
+                    }
                     None => return Err(LocationValidationError::NotDirectory),
                 },
                 Err(error) => return Err(error),
             }
         } else {
-            self.navigate_validated(location, true);
+            self.navigate_validated(location.clone(), true);
         }
-        Ok(())
+        Ok(location)
     }
 
     fn navigate_validated(self: &Rc<Self>, location: Location, select_first: bool) {
