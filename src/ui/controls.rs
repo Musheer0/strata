@@ -554,6 +554,29 @@ impl ModalLayout {
     }
 }
 
+fn modal_loading_spinner() -> gtk::Spinner {
+    let loading = gtk::Spinner::new();
+    loading.add_css_class("action-dialog-loading");
+    loading.set_visible(false);
+    loading
+}
+
+/// Starts a dialog spinner that may have run before. GTK 4.24 leaves a spinner
+/// restarted after being hidden blank or frozen, so this swaps in a fresh one
+/// and returns it.
+pub(super) fn restart_modal_loading(
+    spinner: &gtk::Spinner,
+    description: Option<&str>,
+) -> gtk::Spinner {
+    let fresh = modal_loading_spinner();
+    if let Some(parent) = spinner.parent().and_downcast::<gtk::Box>() {
+        parent.insert_child_after(&fresh, Some(spinner));
+        parent.remove(spinner);
+    }
+    set_modal_loading(&fresh, true, description);
+    fresh
+}
+
 /// [`ModalLayout::set_loading`] for a dialog that keeps only its spinner.
 pub(super) fn set_modal_loading(spinner: &gtk::Spinner, loading: bool, description: Option<&str>) {
     if loading {
@@ -664,9 +687,7 @@ pub(super) fn modal_layout_with_tone(
     heading.append(&title);
     heading.append(&subtitle);
 
-    let loading = gtk::Spinner::new();
-    loading.add_css_class("action-dialog-loading");
-    loading.set_visible(false);
+    let loading = modal_loading_spinner();
 
     let close = gtk::Button::new();
     close.add_css_class("action-dialog-close");

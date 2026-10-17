@@ -2,8 +2,9 @@
 
 //! Add-network-location dialog, which stays open until the location opens or fails.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 
@@ -15,7 +16,7 @@ use crate::{
         browser::ConnectOutcome,
         controls::{
             form_check_button, form_entry, form_error_label, form_label, keep_words_whole,
-            modal_layout, set_modal_loading,
+            modal_layout, restart_modal_loading, set_modal_loading,
         },
         modal::{
             ModalHost, close_on_escape, dismiss_modal_layer, modal_layer, remember_modal_focus,
@@ -32,6 +33,10 @@ mod tests;
 /// A URI example, not prose, so it is never translated.
 const ADDRESS_EXAMPLE: &str = "smb://server/share";
 
+/// GTK's spinner fades in over about a second, so a retry that fails at once
+/// would show no spinner and redisplay the same error, as if Connect did nothing.
+pub(super) const MIN_CONNECTING: Duration = Duration::from_secs(1);
+
 pub(super) fn menu_extra() -> PlaceMenuExtra {
     PlaceMenuExtra {
         icon: assets::icons::PLUS,
@@ -45,7 +50,7 @@ struct ConnectForm {
     address: gtk::Entry,
     pin: gtk::CheckButton,
     confirm: gtk::Button,
-    loading: gtk::Spinner,
+    loading: RefCell<gtk::Spinner>,
     error: gtk::Label,
 }
 
@@ -54,8 +59,12 @@ impl ConnectForm {
         self.address.set_sensitive(!connecting);
         self.pin.set_sensitive(!connecting);
         self.confirm.set_sensitive(!connecting);
-        set_modal_loading(&self.loading, connecting, Some(&i18n::tr("Connecting…")));
-        if !connecting {
+        if connecting {
+            let fresh =
+                restart_modal_loading(&self.loading.borrow(), Some(&i18n::tr("Connecting…")));
+            self.loading.replace(fresh);
+        } else {
+            set_modal_loading(&self.loading.borrow(), false, None);
             self.address.grab_focus();
         }
     }
@@ -112,7 +121,7 @@ pub(super) fn show(state: &Rc<SidebarState>) {
         address,
         pin,
         confirm: layout.confirm.clone(),
-        loading: layout.loading.clone(),
+        loading: RefCell::new(layout.loading.clone()),
         error,
     });
     {
@@ -188,38 +197,48 @@ pub(super) fn show(state: &Rc<SidebarState>) {
             let dismiss = dismiss.clone();
             let weak_layer = weak_layer.clone();
             let pin_requested = form.pin.is_active();
-            move |outcome| {
-                connecting.set(false);
-                match outcome {
-                    ConnectOutcome::Opened(location) => {
-                        if let Some(state) = weak_state.upgrade() {
-                            if pin_requested {
-                                let location = normalized_location(location);
-                                let label = pin_label(&location);
-                                state.pin_location(location, label);
-                            }
-                            // Outcomes can arrive mid-dispatch of a browser event.
-                            let browser = Rc::downgrade(&state.browser);
-                            if let Some(layer) = weak_layer.upgrade() {
-                                set_modal_focus_restore(
-                                    layer.upcast_ref(),
-                                    Rc::new(move || {
-                                        if let Some(browser) = browser.upgrade() {
-                                            browser.focus_active();
-                                        }
-                                    }),
-                                );
-                            }
+            let started = Instant::now();
+            move |outcome| match outcome {
+                ConnectOutcome::Opened(location) => {
+                    connecting.set(false);
+                    if let Some(state) = weak_state.upgrade() {
+                        if pin_requested {
+                            let location = normalized_location(location);
+                            let label = pin_label(&location);
+                            state.pin_location(location, label);
                         }
-                        dismiss();
+                        // Outcomes can arrive mid-dispatch of a browser event.
+                        let browser = Rc::downgrade(&state.browser);
+                        if let Some(layer) = weak_layer.upgrade() {
+                            set_modal_focus_restore(
+                                layer.upcast_ref(),
+                                Rc::new(move || {
+                                    if let Some(browser) = browser.upgrade() {
+                                        browser.focus_active();
+                                    }
+                                }),
+                            );
+                        }
                     }
-                    ConnectOutcome::Failed(message) => {
+                    dismiss();
+                }
+                ConnectOutcome::Failed(message) => {
+                    let connecting = connecting.clone();
+                    let weak_form = weak_form.clone();
+                    let show = move || {
+                        connecting.set(false);
                         if let Some(form) = weak_form.upgrade() {
                             form.set_connecting(false);
-                            if let Some(message) = message {
-                                form.show_error(&message);
+                            if let Some(message) = &message {
+                                form.show_error(message);
                             }
                         }
+                    };
+                    match MIN_CONNECTING.checked_sub(started.elapsed()) {
+                        Some(remaining) => {
+                            gtk::glib::timeout_add_local_once(remaining, show);
+                        }
+                        None => show(),
                     }
                 }
             }

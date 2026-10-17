@@ -189,11 +189,9 @@ fn add_network_location_stays_open_until_connecting_ends_and_pins_only_on_succes
             let connect = find::<gtk::Button>(&overlay, |button| {
                 button.has_css_class("action-dialog-confirm")
             });
-            let spinner = find::<gtk::Spinner>(&overlay, |spinner| {
-                spinner.has_css_class("action-dialog-loading")
-            });
             address.set_text("smb://unreachable.invalid/share");
             pin.set_active(true);
+            let clicked = Instant::now();
             connect.emit_clicked();
 
             assert_eq!(
@@ -202,16 +200,25 @@ fn add_network_location_stays_open_until_connecting_ends_and_pins_only_on_succes
                 "the dialog stays while connecting"
             );
             assert!(!connect.is_sensitive() && !address.is_sensitive() && !pin.is_sensitive());
-            assert!(spinner.is_visible() && spinner.is_spinning());
+            let spinner = || {
+                find::<gtk::Spinner>(&overlay, |spinner| {
+                    spinner.has_css_class("action-dialog-loading")
+                })
+            };
+            assert!(spinner().is_visible() && spinner().is_spinning());
 
             wait_until(|| connect.is_sensitive(), "connecting to fail");
+            assert!(
+                clicked.elapsed() >= super::super::network_location::MIN_CONNECTING,
+                "an instant failure still reads as an attempt"
+            );
             assert_eq!(
                 modal_layers(&overlay),
                 1,
                 "the failure is shown in the dialog, not a second one"
             );
             assert!(address.is_sensitive() && pin.is_sensitive());
-            assert!(!spinner.is_visible());
+            assert!(!spinner().is_visible());
             assert!(address.has_css_class("error"));
             let error =
                 find::<gtk::Label>(&overlay, |label| label.has_css_class("form-field-error"));
