@@ -1153,6 +1153,9 @@ pub(super) struct SidebarState {
     keycaps: RefCell<Vec<gtk::Label>>,
     keycaps_shown: Cell<bool>,
     visible_pins: RefCell<Vec<Location>>,
+    /// The separator, heading and drop gap of a Pinned section with no pins.
+    empty_pinned_section: RefCell<Vec<glib::WeakRef<gtk::Widget>>>,
+    file_drag_over: Cell<bool>,
     drop_feedback: Rc<sidebar_drop_feedback::SidebarDropFeedback>,
 }
 
@@ -1658,6 +1661,8 @@ impl SidebarState {
             .filter(|(_, (location, _))| !self.local_only || location.native_path().is_some())
             .map(|(index, (location, name))| (index, location.clone(), name.clone()))
             .collect::<Vec<_>>();
+        let empty = pinned.is_empty();
+        let before_section = self.widget.last_child();
         if self.widget.first_child().is_some() {
             self.append_separator();
         }
@@ -1674,6 +1679,30 @@ impl SidebarState {
             }
         }
         pinned_drop::append_gap(self, previous, None, &drag_cache);
+        let section = if empty {
+            let first = match before_section {
+                Some(widget) => widget.next_sibling(),
+                None => self.widget.first_child(),
+            };
+            std::iter::successors(first, gtk::Widget::next_sibling)
+                .inspect(|widget| widget.set_visible(self.file_drag_over.get()))
+                .map(|widget| widget.downgrade())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.empty_pinned_section.replace(section);
+    }
+
+    /// With nothing pinned, the Pinned section is only a drop target, so it
+    /// shows just while files are dragged over the sidebar.
+    pub(super) fn set_file_drag_over(&self, over: bool) {
+        self.file_drag_over.set(over);
+        for widget in self.empty_pinned_section.borrow().iter() {
+            if let Some(widget) = widget.upgrade() {
+                widget.set_visible(over);
+            }
+        }
     }
 
     fn append_devices(self: &Rc<Self>) {

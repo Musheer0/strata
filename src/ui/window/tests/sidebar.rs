@@ -247,6 +247,43 @@ fn add_network_location_stays_open_until_connecting_ends_and_pins_only_on_succes
 }
 
 #[test]
+fn an_empty_pinned_section_shows_only_while_files_are_dragged_over_the_sidebar() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::sidebar::an_empty_pinned_section_shows_only_while_files_are_dragged_over_the_sidebar",
+        || {
+            use super::super::save_pinned_places;
+            PreferenceManager::seed_saved_preferences_for_test();
+            save_pinned_places(&[]).expect("no pins");
+            let view = browser_for_window();
+            let sidebar = build_sidebar(view.clone(), PreferenceManager::shared(), false);
+            let window = gtk::Window::builder().child(&sidebar.widget).build();
+            window.present();
+            let pinned_shown = || shows_label(&sidebar.widget, "PINNED");
+
+            assert!(!pinned_shown(), "nothing pinned, so no Pinned section");
+            sidebar.state.set_file_drag_over(true);
+            assert!(pinned_shown(), "a file drag reveals the pin drop target");
+            sidebar.state.rebuild();
+            assert!(
+                pinned_shown(),
+                "a rebuild during the drag keeps it revealed"
+            );
+            sidebar.state.set_file_drag_over(false);
+            assert!(!pinned_shown(), "leaving the sidebar hides it again");
+
+            sidebar
+                .state
+                .pin_location(Location::local("/pinned/folder"), "Folder".to_owned());
+            wait_until(|| shows_label(&sidebar.widget, "Folder"), "the new pin");
+            assert!(pinned_shown(), "a section with pins always shows");
+            view.browser().clear_observer();
+            sidebar.disconnect();
+            window.destroy();
+        },
+    );
+}
+
+#[test]
 fn sidebar_reorders_only_distinct_rows_in_the_same_section() {
     for (source, target, accepts) in [
         ("trash", "home", true),

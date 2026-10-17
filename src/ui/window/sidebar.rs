@@ -36,6 +36,7 @@ pub(in crate::ui) fn build_sidebar(
     state.observe_navigation_and_trash();
     let (handlers, mount_handler) = connect_device_changes(&state);
     let recent_setting_handler = connect_recent_setting_changes(&state);
+    reveal_empty_pins_during_file_drags(&state, &shell.widget);
     // Device discovery remains deferred to the window's first-paint callback.
     state.append_static_places();
     state.sync_active_place();
@@ -60,6 +61,28 @@ pub(in crate::ui) fn build_sidebar(
         release_watch,
         bookmark_watch: RefCell::new(Some(bookmark_watch)),
     }
+}
+
+fn reveal_empty_pins_during_file_drags(state: &Rc<SidebarState>, sidebar: &gtk::Box) {
+    let motion = gtk::DropControllerMotion::new();
+    let weak = Rc::downgrade(state);
+    motion.connect_enter(move |motion, _, _| {
+        let offers_files = motion.drop().is_some_and(|drop| {
+            drop.formats()
+                .union_deserialize_types()
+                .contains_type(gtk::gdk::FileList::static_type())
+        });
+        if let Some(state) = weak.upgrade() {
+            state.set_file_drag_over(offers_files);
+        }
+    });
+    let weak = Rc::downgrade(state);
+    motion.connect_leave(move |_| {
+        if let Some(state) = weak.upgrade() {
+            state.set_file_drag_over(false);
+        }
+    });
+    sidebar.add_controller(motion);
 }
 
 fn connect_recent_setting_changes(
@@ -196,6 +219,8 @@ impl SidebarState {
             keycaps: RefCell::new(Vec::new()),
             keycaps_shown: Cell::new(false),
             visible_pins: RefCell::new(Vec::new()),
+            empty_pinned_section: RefCell::new(Vec::new()),
+            file_drag_over: Cell::new(false),
             drop_feedback,
         })
     }

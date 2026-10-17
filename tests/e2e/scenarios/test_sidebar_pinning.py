@@ -24,6 +24,24 @@ def pin_gap(strata, index=0):
     )[index]
 
 
+def drag_onto_pin_gap(strata, start, index=0, *, modifiers=()):
+    """Hold a drag over a Pinned gap; the caller releases the button.
+
+    With nothing pinned the section appears only once a file drag reaches the
+    sidebar, so the drag first enters blank sidebar space below the rows.
+    """
+
+    home = strata.sidebar_button("Home").screen_bounds()
+    window = strata.window_bounds()
+    strata.pointer.drag_points(
+        start,
+        (home.center[0], window.y + window.height - 80),
+        release=False,
+        modifiers=modifiers,
+    )
+    strata.pointer.move_to(*pin_gap(strata, index).screen_bounds().center)
+
+
 def drag_to_pin(strata, names, index=0, *, modifiers=()):
     directory = strata.fixture.root.name
     strata.select_entry(names[0], directory)
@@ -33,13 +51,15 @@ def drag_to_pin(strata, names, index=0, *, modifiers=()):
         lambda: set(strata.selected_names(directory)) == set(names),
         "the drag selection in its source pane",
     )
-    strata.pointer.drag_points(
-        strata.pointer.drag_origin(strata.entry(names[0], directory)),
-        pin_gap(strata, index).screen_bounds().center,
-        release=False,
-        modifiers=modifiers,
-    )
-    strata.pointer.connection.button(1, False)
+    try:
+        drag_onto_pin_gap(
+            strata,
+            strata.pointer.drag_origin(strata.entry(names[0], directory)),
+            index,
+            modifiers=modifiers,
+        )
+    finally:
+        strata.pointer.connection.button(1, False)
 
 
 @pytest.mark.parametrize("mode", ALL_MODES)
@@ -128,7 +148,10 @@ def test_foreign_folder_drags_validate_the_entire_selection_before_pinning(strat
             lambda: tree.desktop().find(role="button", name="Foreign file selection"),
             "the foreign drag source",
         )
-        strata.pointer.drag(button, pin_gap(strata))
+        try:
+            drag_onto_pin_gap(strata, strata.pointer.drag_origin(button))
+        finally:
+            strata.pointer.connection.button(1, False)
         strata.wait(
             lambda: tree.desktop().find(role="button", name="Foreign drag finished"),
             "external validation and the drop protocol to finish",
@@ -181,12 +204,8 @@ def test_folder_pin_drag_survives_sidebar_shrinking_and_expanding(strata, mode):
     expected = []
     for name, width in [("archive", 400), ("documents", 1200)]:
         source = strata.fixture.path(name)
-        strata.pointer.drag_points(
-            strata.pointer.drag_origin(strata.entry(name)),
-            pin_gap(strata, -1).screen_bounds().center,
-            release=False,
-        )
         try:
+            drag_onto_pin_gap(strata, strata.pointer.drag_origin(strata.entry(name)), -1)
             bounds = strata.window.window_bounds()
             strata.pointer.connection.resize_surface(
                 bounds.width, bounds.height, width, bounds.height
