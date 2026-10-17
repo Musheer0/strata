@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: MIT
 
-//! Add-network-location dialog and pin-after-successful-connect tracking.
+//! Add-network-location dialog, which stays open until the location opens or fails.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gtk::prelude::*;
 
 use crate::{
     adapters::{gio_file_for_location, location_for_file},
-    app::BrowserEvent,
     assets, i18n,
     model::Location,
-    services::LocationValidationError,
     ui::{
-        controls::{form_check_button, form_entry, form_error_label, form_label, modal_layout},
+        browser::ConnectOutcome,
+        controls::{
+            form_check_button, form_entry, form_error_label, form_label, keep_words_whole,
+            modal_layout, set_modal_loading,
+        },
         modal::{
             ModalHost, close_on_escape, dismiss_modal_layer, modal_layer, remember_modal_focus,
-            submit_on_enter,
+            set_modal_focus_restore, submit_on_enter,
         },
     },
 };
@@ -24,73 +27,50 @@ use crate::{
 use super::{PlaceMenuExtra, SidebarState};
 
 #[cfg(test)]
-pub(super) mod tests;
+mod tests;
+
+/// A URI example, not prose, so it is never translated.
+const ADDRESS_EXAMPLE: &str = "smb://server/share";
 
 pub(super) fn menu_extra() -> PlaceMenuExtra {
     PlaceMenuExtra {
         icon: assets::icons::PLUS,
         label: "Add network location…",
-        action: Rc::new(show),
+        action: show,
     }
 }
 
-/// Registers the observer that pins a requested location after its first
-/// successful load, plus the shared VolumeMonitor handler that unpins a network
-/// location once it is removed. Returns the monitor handler id so the sidebar
-/// can disconnect it (the monitor is process-wide).
-pub(super) fn watch(state: &Rc<SidebarState>) -> gtk::glib::SignalHandlerId {
-    let weak = Rc::downgrade(state);
-    state.browser.observe(move |event| {
-        let Some(state) = weak.upgrade() else {
-            return;
-        };
-        let decision = state.network_pin.borrow_mut().handle(event);
-        if let Some((location, label)) = decision {
-            state.pin_location(location, label);
-        }
-    });
-
-    let weak = Rc::downgrade(state);
-    state.volume_monitor.connect_mount_removed(move |_, mount| {
-        let Some(location) = location_for_file(&mount.root()) else {
-            return;
-        };
-        if !is_network_mount(&location) {
-            return;
-        }
-        // Defer past the monitor's emission; widgets are rebuilt from idle.
-        let weak = weak.clone();
-        gtk::glib::idle_add_local_once(move || {
-            let Some(state) = weak.upgrade() else {
-                return;
-            };
-            // A replaced or reconnected mount keeps the pin: only a location
-            // that is gone from the system loses it.
-            let still_mounted = state
-                .volume_monitor
-                .mounts()
-                .into_iter()
-                .any(|other| location_for_file(&other.root()).as_ref() == Some(&location));
-            if still_mounted {
-                return;
-            }
-            state.unpin_location(&location);
-        });
-    })
+/// The controls locked while a connection attempt is in flight.
+struct ConnectForm {
+    address: gtk::Entry,
+    pin: gtk::CheckButton,
+    confirm: gtk::Button,
+    loading: gtk::Spinner,
+    error: gtk::Label,
 }
 
-/// Mount roots the app opens as network locations. Native disks and device
-/// schemes (cameras, phones) keep their pinned folders when unplugged.
-fn is_network_mount(location: &Location) -> bool {
-    location
-        .uri_value()
-        .and_then(|uri| uri.split_once("://"))
-        .is_some_and(|(scheme, _)| {
-            matches!(
-                scheme.to_ascii_lowercase().as_str(),
-                "smb" | "sftp" | "ftp" | "ftps" | "dav" | "davs"
-            )
-        })
+impl ConnectForm {
+    fn set_connecting(&self, connecting: bool) {
+        self.address.set_sensitive(!connecting);
+        self.pin.set_sensitive(!connecting);
+        self.confirm.set_sensitive(!connecting);
+        set_modal_loading(&self.loading, connecting, Some(&i18n::tr("Connecting…")));
+        if !connecting {
+            self.address.grab_focus();
+        }
+    }
+
+    /// `message` is already localized.
+    fn show_error(&self, message: &str) {
+        self.error.set_text(message);
+        self.error.set_visible(true);
+        self.address.add_css_class("error");
+    }
+
+    fn clear_error(&self) {
+        self.address.remove_css_class("error");
+        self.error.set_visible(false);
+    }
 }
 
 pub(super) fn show(state: &Rc<SidebarState>) {
@@ -112,11 +92,15 @@ pub(super) fn show(state: &Rc<SidebarState>) {
 
     let fields = gtk::Box::new(gtk::Orientation::Vertical, 5);
     fields.add_css_class("authentication-fields");
-    let address_label = form_label(&i18n::tr("Server address"));
     let address = form_entry();
-    address.set_placeholder_text(Some(&i18n::tr("smb://server/share")));
+    address.set_placeholder_text(Some(ADDRESS_EXAMPLE));
     let error = form_error_label();
-    fields.append(&address_label);
+    error.set_wrap(true);
+    error.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    // Wrap within the dialog's width instead of widening it to fit the message.
+    error.set_max_width_chars(1);
+    keep_words_whole(&error);
+    fields.append(&form_label(&i18n::tr("Server address")));
     fields.append(&address);
     fields.append(&error);
     layout.body.append(&fields);
@@ -124,19 +108,32 @@ pub(super) fn show(state: &Rc<SidebarState>) {
     let pin = form_check_button(&i18n::tr("Add to sidebar"));
     layout.body.append(&pin);
 
+    let form = Rc::new(ConnectForm {
+        address,
+        pin,
+        confirm: layout.confirm.clone(),
+        loading: layout.loading.clone(),
+        error,
+    });
     {
-        let watched = address.clone();
-        let address_clear = address.clone();
-        let error_clear = error.clone();
-        watched.connect_changed(move |_| {
-            address_clear.remove_css_class("error");
-            error_clear.set_visible(false);
+        let weak_form = Rc::downgrade(&form);
+        form.address.connect_changed(move |_| {
+            if let Some(form) = weak_form.upgrade() {
+                form.clear_error();
+            }
         });
     }
 
+    let connecting = Rc::new(Cell::new(false));
     let block_dismiss = {
-        let address = address.clone();
-        Rc::new(move || !address.text().trim().is_empty())
+        let address = form.address.downgrade();
+        let connecting = connecting.clone();
+        Rc::new(move || {
+            connecting.get()
+                || address
+                    .upgrade()
+                    .is_some_and(|address| !address.text().trim().is_empty())
+        })
     };
     let layer = modal_layer(
         &layout.content,
@@ -147,120 +144,94 @@ pub(super) fn show(state: &Rc<SidebarState>) {
     remember_modal_focus(&layer, &window_overlay);
     window_overlay.add_overlay(&layer);
     submit_on_enter(&layout.body, &layout.confirm);
-    address.grab_focus();
+    form.address.grab_focus();
 
     let dismiss: Rc<dyn Fn()> = Rc::new({
         let layer = layer.clone();
         let overlay = window_overlay.clone();
-        let root = blurred_root.clone();
-        move || dismiss_modal_layer(&layer, &overlay, root.as_ref())
+        move || dismiss_modal_layer(&layer, &overlay, blurred_root.as_ref())
+    });
+    let cancel: Rc<dyn Fn()> = Rc::new({
+        let weak_state = Rc::downgrade(state);
+        let connecting = connecting.clone();
+        let dismiss = dismiss.clone();
+        move || {
+            if connecting.replace(false)
+                && let Some(state) = weak_state.upgrade()
+            {
+                state.view.cancel_connect();
+            }
+            dismiss();
+        }
     });
     for button in [&layout.close, &layout.cancel] {
-        let dismissed = dismiss.clone();
-        button.connect_clicked(move |_| dismissed());
+        let cancel = cancel.clone();
+        button.connect_clicked(move |_| cancel());
     }
-    {
-        let dismissed = dismiss.clone();
-        close_on_escape(&layer, move || dismissed());
-    }
+    close_on_escape(&layer, move || cancel());
 
-    {
-        let weak_state = Rc::downgrade(state);
-        let address = address.clone();
-        let error = error.clone();
-        let dismiss = dismiss.clone();
-        layout.confirm.connect_clicked(move |_| {
-            let Some(state) = weak_state.upgrade() else {
-                return;
-            };
-            let input = address.text().to_string();
-            match state.view.typed_location(input.trim()) {
-                Ok(location) => {
-                    if pin.is_active() {
-                        state.network_pin.borrow_mut().request(location);
-                    }
-                    dismiss();
-                    state.browser.focus_active();
-                }
-                Err(err) => {
-                    // `message()` is already localized; do not translate again.
-                    error.set_text(&err.message());
-                    error.set_visible(true);
-                    address.add_css_class("error");
-                }
-            }
-        });
-    }
-}
-
-/// One in-flight pin request and the column chain it is matched against.
-///
-/// The chain mirrors the browser's column stack so a `LoadFinished` for an
-/// unrelated directory cannot satisfy the request.
-#[derive(Default)]
-pub(super) struct PinTracker {
-    pending: Option<(Location, String)>,
-    chain: Vec<Option<Location>>,
-}
-
-impl PinTracker {
-    pub(super) fn request(&mut self, location: Location) {
-        // Pin GIO's normalized form: the bookmark parser reloads entries through
-        // GIO (smb://host/share becomes smb://host/share/), and Unpin compares
-        // the reloaded form against the row, so a raw typed URI would never match.
-        let location = normalized_location(location);
-        self.pending = Some((location.clone(), pin_label(&location)));
-    }
-
-    pub(super) fn handle(&mut self, event: &BrowserEvent) -> Option<(Location, String)> {
-        match event {
-            BrowserEvent::Reset => {
-                self.chain.clear();
-                None
-            }
-            BrowserEvent::ColumnsTruncated { len, .. } => {
-                self.chain.truncate(*len);
-                None
-            }
-            BrowserEvent::ColumnAdded { depth, location } => {
-                if self.chain.len() <= *depth {
-                    self.chain.resize(depth + 1, None);
-                }
-                self.chain[*depth] = Some(location.clone());
-                None
-            }
-            BrowserEvent::LoadFinished { depth, .. } => {
-                let pending = self.pending.take()?;
-                let matches = self
-                    .chain
-                    .get(*depth)
-                    .and_then(Option::as_ref)
-                    .is_some_and(|chain_location| same_location(chain_location, &pending.0));
-                if matches {
-                    Some(pending)
-                } else {
-                    self.pending = Some(pending);
-                    None
-                }
-            }
-            BrowserEvent::LoadFailed { .. } => None,
-            BrowserEvent::LocationNavigationRejected { error }
-            | BrowserEvent::NavigationRejected { error, .. } => {
-                // A mount prompt is the normal path for remote locations; keep
-                // the request so a successful mount can still pin.
-                if matches!(
-                    error,
-                    LocationValidationError::Mountable(_) | LocationValidationError::NotMounted(_)
-                ) {
-                    None
-                } else {
-                    self.pending = None;
-                    None
-                }
-            }
-            _ => None,
+    let weak_state = Rc::downgrade(state);
+    let weak_layer = layer.downgrade();
+    layout.confirm.connect_clicked(move |_| {
+        let Some(state) = weak_state.upgrade() else {
+            return;
+        };
+        if connecting.replace(true) {
+            return;
         }
-    }
+        form.clear_error();
+        form.set_connecting(true);
+        let finished = {
+            let weak_state = weak_state.clone();
+            let weak_form = Rc::downgrade(&form);
+            let connecting = connecting.clone();
+            let dismiss = dismiss.clone();
+            let weak_layer = weak_layer.clone();
+            let pin_requested = form.pin.is_active();
+            move |outcome| {
+                connecting.set(false);
+                match outcome {
+                    ConnectOutcome::Opened(location) => {
+                        if let Some(state) = weak_state.upgrade() {
+                            if pin_requested {
+                                let location = normalized_location(location);
+                                let label = pin_label(&location);
+                                state.pin_location(location, label);
+                            }
+                            // Outcomes can arrive mid-dispatch of a browser event.
+                            let browser = Rc::downgrade(&state.browser);
+                            if let Some(layer) = weak_layer.upgrade() {
+                                set_modal_focus_restore(
+                                    layer.upcast_ref(),
+                                    Rc::new(move || {
+                                        if let Some(browser) = browser.upgrade() {
+                                            browser.focus_active();
+                                        }
+                                    }),
+                                );
+                            }
+                        }
+                        dismiss();
+                    }
+                    ConnectOutcome::Failed(message) => {
+                        if let Some(form) = weak_form.upgrade() {
+                            form.set_connecting(false);
+                            if let Some(message) = message {
+                                form.show_error(&message);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        let input = form.address.text();
+        if let Err(error) = state.view.connect_typed_location(input.trim(), finished) {
+            connecting.set(false);
+            form.set_connecting(false);
+            // `message()` is already localized.
+            form.show_error(&error.message());
+        }
+    });
 }
 
 fn pin_label(location: &Location) -> String {
@@ -272,15 +243,9 @@ fn pin_label(location: &Location) -> String {
     }
 }
 
-/// The location form the bookmark parser produces, so a pinned row survives the
-/// reload Unpin performs. Falls back to the original if GIO rejects the URI.
+/// The form the bookmark parser reloads a pin in (`smb://host/share` gains a
+/// trailing slash), so Unpin can match the row. Falls back to the original if
+/// GIO rejects the URI.
 fn normalized_location(location: Location) -> Location {
     location_for_file(&gio_file_for_location(&location)).unwrap_or(location)
-}
-
-fn same_location(a: &Location, b: &Location) -> bool {
-    match (a.uri_value(), b.uri_value()) {
-        (Some(a), Some(b)) => a.trim_end_matches('/') == b.trim_end_matches('/'),
-        _ => a == b,
-    }
 }

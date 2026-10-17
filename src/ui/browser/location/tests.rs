@@ -899,6 +899,168 @@ fn breadcrumb_adjustment_does_not_retain_widgets() {
     );
 }
 
+/// Validates remote locations from an idle callback, as GIO answers network queries.
+struct DeferredValidation {
+    unavailable: &'static str,
+}
+
+impl crate::services::FileSource for DeferredValidation {
+    fn validate_location(&self, location: &Location) -> Result<(), LocationValidationError> {
+        if location
+            .uri_value()
+            .is_some_and(|uri| uri.trim_end_matches('/') == self.unavailable)
+        {
+            Err(LocationValidationError::Unavailable(
+                "no route to host".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_location_async(
+        &self,
+        location: Location,
+        emit: Rc<dyn Fn(Result<(), LocationValidationError>)>,
+    ) -> crate::services::LoadHandle {
+        let result = self.validate_location(&location);
+        let source = Rc::new(RefCell::new(Some(glib::idle_add_local_once(move || {
+            emit(result)
+        }))));
+        crate::services::LoadHandle::new(move || {
+            if let Some(source) = source.borrow_mut().take() {
+                source.remove();
+            }
+        })
+    }
+
+    fn enumerate(
+        &self,
+        _: crate::services::DirectoryRequest,
+        _: Rc<dyn Fn(crate::services::DirectoryEvent)>,
+    ) -> crate::services::LoadHandle {
+        crate::services::LoadHandle::new(|| {})
+    }
+}
+
+const UNAVAILABLE_SHARE: &str = "sftp://down.example/share";
+
+fn connect_browser() -> (BrowserView, gtk::Window, gtk::Overlay) {
+    hosted_browser_with(Rc::new(DeferredValidation {
+        unavailable: UNAVAILABLE_SHARE,
+    }))
+}
+
+fn record_outcomes() -> (
+    Rc<RefCell<Vec<ConnectOutcome>>>,
+    impl Fn(ConnectOutcome) + 'static,
+) {
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let recorded = outcomes.clone();
+    (outcomes, move |outcome| recorded.borrow_mut().push(outcome))
+}
+
+#[test]
+fn connect_waits_for_remote_validation_before_opening() {
+    crate::test_support::gtk_test(
+        "ui::browser::location::tests::connect_waits_for_remote_validation_before_opening",
+        || {
+            let (view, window, _overlay) = connect_browser();
+            let start = Location::local("/");
+            view.browser().navigate(start.clone());
+            let (outcomes, finished) = record_outcomes();
+
+            view.connect_typed_location("sftp://up.example/share", finished)
+                .expect("valid address");
+            assert!(outcomes.borrow().is_empty(), "validation is still pending");
+            assert_eq!(view.browser().active_location(), Some(start));
+
+            wait_until(|| !outcomes.borrow().is_empty(), "connect outcome");
+            let opened = match outcomes.borrow().as_slice() {
+                [ConnectOutcome::Opened(location)] => location.clone(),
+                _ => panic!("expected one Opened outcome"),
+            };
+            assert_eq!(
+                opened.uri_value().map(|uri| uri.trim_end_matches('/')),
+                Some("sftp://up.example/share")
+            );
+            assert_eq!(view.browser().active_location(), Some(opened));
+            window.destroy();
+            view.browser().clear_observer();
+        },
+    );
+}
+
+#[test]
+fn connect_reports_failures_to_the_waiting_dialog_instead_of_a_new_one() {
+    crate::test_support::gtk_test(
+        "ui::browser::location::tests::connect_reports_failures_to_the_waiting_dialog_instead_of_a_new_one",
+        || {
+            let (view, window, overlay) = connect_browser();
+            let start = Location::local("/");
+            view.browser().navigate(start.clone());
+            let (outcomes, finished) = record_outcomes();
+
+            assert!(matches!(
+                view.connect_typed_location("user@host:path", finished),
+                Err(LocationValidationError::UnsupportedShorthand(_))
+            ));
+            let (outcomes_after_rejection, finished) = record_outcomes();
+            view.connect_typed_location(UNAVAILABLE_SHARE, finished)
+                .expect("valid address");
+            wait_until(
+                || !outcomes_after_rejection.borrow().is_empty(),
+                "connect outcome",
+            );
+
+            assert!(outcomes.borrow().is_empty(), "rejected input never reports");
+            assert!(matches!(
+                outcomes_after_rejection.borrow().as_slice(),
+                [ConnectOutcome::Failed(Some(message))] if message.contains("no route to host")
+            ));
+            assert!(
+                modal_layer_on(&overlay).is_none(),
+                "no separate error dialog"
+            );
+            assert_eq!(view.browser().active_location(), Some(start));
+            window.destroy();
+            view.browser().clear_observer();
+        },
+    );
+}
+
+#[test]
+fn cancelled_connect_neither_opens_nor_reports() {
+    crate::test_support::gtk_test(
+        "ui::browser::location::tests::cancelled_connect_neither_opens_nor_reports",
+        || {
+            let (view, window, overlay) = connect_browser();
+            let start = Location::local("/");
+            view.browser().navigate(start.clone());
+            for address in ["sftp://up.example/share", UNAVAILABLE_SHARE] {
+                let (outcomes, finished) = record_outcomes();
+
+                view.connect_typed_location(address, finished)
+                    .expect("valid address");
+                view.cancel_connect();
+                for _ in 0..20 {
+                    glib::MainContext::default().iteration(false);
+                }
+
+                assert!(outcomes.borrow().is_empty(), "{address}");
+                assert_eq!(
+                    view.browser().active_location(),
+                    Some(start.clone()),
+                    "{address}"
+                );
+                assert!(modal_layer_on(&overlay).is_none(), "{address}");
+            }
+            window.destroy();
+            view.browser().clear_observer();
+        },
+    );
+}
+
 fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
     let mut widgets = vec![widget.clone()];
     let mut child = widget.first_child();
@@ -910,10 +1072,13 @@ fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
 }
 
 fn hosted_browser() -> (BrowserView, gtk::Window, gtk::Overlay) {
-    let view = BrowserView::new(
-        Rc::new(crate::adapters::LocalFileSource),
-        crate::ui::browser::PeekBehavior::default(),
-    );
+    hosted_browser_with(Rc::new(crate::adapters::LocalFileSource))
+}
+
+fn hosted_browser_with(
+    source: Rc<dyn crate::services::FileSource>,
+) -> (BrowserView, gtk::Window, gtk::Overlay) {
+    let view = BrowserView::new(source, crate::ui::browser::PeekBehavior::default());
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&view.widget()));
     let window = gtk::Window::builder().child(&overlay).build();

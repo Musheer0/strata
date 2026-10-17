@@ -547,6 +547,29 @@ pub(super) enum TypedLocation {
     },
 }
 
+/// How a typed location a dialog waits on turned out.
+pub(in crate::ui) enum ConnectOutcome {
+    Opened(Location),
+    /// The message to show, or `None` when the user cancelled authentication.
+    Failed(Option<String>),
+}
+
+/// A typed location a dialog waits on until it opens or fails.
+pub(in crate::ui) struct PendingConnect {
+    /// Unknown until the typed input resolves; remote targets open asynchronously.
+    target: RefCell<Option<Location>>,
+    cancellable: gio::Cancellable,
+    finished: Box<dyn Fn(ConnectOutcome)>,
+}
+
+/// Remote roots differ only by a trailing slash depending on who built the URI.
+fn same_location(a: &Location, b: &Location) -> bool {
+    match (a.uri_value(), b.uri_value()) {
+        (Some(a), Some(b)) => a.trim_end_matches('/') == b.trim_end_matches('/'),
+        _ => a == b,
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct MountCredentials {
     anonymous: bool,
@@ -1272,6 +1295,7 @@ impl ViewState {
         self.mount_target(
             MountTarget::Volume(volume.clone()),
             credentials,
+            None,
             move |state, result, attempted, details| {
                 if !result
                     .as_ref()
@@ -1386,6 +1410,7 @@ impl ViewState {
         self.mount_target(
             MountTarget::Drive(drive.clone()),
             credentials,
+            None,
             move |state, result, attempted, details| {
                 if !result
                     .as_ref()
@@ -1603,6 +1628,95 @@ impl ViewState {
         }
     }
 
+    pub(super) fn connect_typed_location(
+        self: &Rc<Self>,
+        input: &str,
+        base: Option<&Path>,
+        finished: Box<dyn Fn(ConnectOutcome)>,
+    ) -> Result<(), LocationValidationError> {
+        self.cancel_connect();
+        let connect = Rc::new(PendingConnect {
+            target: RefCell::new(None),
+            cancellable: gio::Cancellable::new(),
+            finished,
+        });
+        // Installed first: a native volume starts mounting before this returns.
+        self.pending_connect.replace(Some(connect.clone()));
+        match self.open_typed_location(input, base) {
+            Ok(TypedLocation::Navigating { location }) => {
+                // Native paths navigate synchronously, as does reopening the current folder.
+                let opened = location.native_path().is_some()
+                    || self
+                        .browser
+                        .active_location()
+                        .is_some_and(|active| same_location(&active, &location));
+                if opened {
+                    self.settle_connect(&connect, ConnectOutcome::Opened(location));
+                } else {
+                    connect.target.replace(Some(location));
+                }
+                Ok(())
+            }
+            Ok(TypedLocation::Mounting { location, .. }) => {
+                connect.target.replace(Some(location));
+                Ok(())
+            }
+            Err(error) => {
+                self.pending_connect.take();
+                Err(error)
+            }
+        }
+    }
+
+    /// Abandons the pending connect so neither its validation nor its mount navigates.
+    pub(super) fn cancel_connect(&self) {
+        let Some(connect) = self.pending_connect.take() else {
+            return;
+        };
+        connect.cancellable.cancel();
+        self.pending_location_credentials.take();
+        self.browser.bump_navigation_generation();
+    }
+
+    /// Reports `outcome` when `connect` is still the pending one; false otherwise.
+    fn settle_connect(&self, connect: &Rc<PendingConnect>, outcome: ConnectOutcome) -> bool {
+        if !self.is_pending_connect(connect) {
+            return false;
+        }
+        self.pending_connect.take();
+        (connect.finished)(outcome);
+        true
+    }
+
+    fn is_pending_connect(&self, connect: &Rc<PendingConnect>) -> bool {
+        self.pending_connect
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| Rc::ptr_eq(pending, connect))
+    }
+
+    /// Reports a failure to the pending connect; false when none is waiting.
+    pub(super) fn fail_pending_connect(&self, message: Option<String>) -> bool {
+        let connect = self.pending_connect.borrow().clone();
+        connect
+            .is_some_and(|connect| self.settle_connect(&connect, ConnectOutcome::Failed(message)))
+    }
+
+    /// Opens the pending connect once its validated target becomes a column.
+    pub(super) fn settle_connect_column(&self, location: &Location) {
+        let connect = self.pending_connect.borrow().clone();
+        if let Some(connect) = connect {
+            let reached = connect
+                .target
+                .borrow()
+                .as_ref()
+                .is_some_and(|target| same_location(target, location));
+            if reached {
+                self.settle_connect(&connect, ConnectOutcome::Opened(location.clone()));
+            }
+        }
+    }
+
     pub(super) fn handle_navigation_rejected(
         self: &Rc<Self>,
         parent_depth: usize,
@@ -1631,12 +1745,24 @@ impl ViewState {
         strategy: MountStrategy,
         credentials: Option<MountCredentials>,
     ) {
+        let connect = self.pending_connect.borrow().clone();
+        let cancellable = connect.as_ref().map(|connect| connect.cancellable.clone());
         self.mount_location(
             location.clone(),
             strategy,
             credentials,
+            cancellable,
             move |state, result, attempted_credentials, prompt_details| {
+                if connect
+                    .as_ref()
+                    .is_some_and(|connect| !state.is_pending_connect(connect))
+                {
+                    return;
+                }
                 if mount_result_is_ok(&result) {
+                    if let Some(connect) = &connect {
+                        state.settle_connect(connect, ConnectOutcome::Opened(location.clone()));
+                    }
                     state.browser.navigate(location.clone());
                     state.location_stack.set_visible_child_name("breadcrumbs");
                     state.browser.focus_active();
@@ -1652,7 +1778,11 @@ impl ViewState {
                         state.abandon_deferred_reveal();
                         state.location_stack.set_visible_child_name("breadcrumbs");
                         state.restore_location_text();
-                        if let Some(message) = mount_failure_message(&location, &error) {
+                        let message = mount_failure_message(&location, &error);
+                        let reported = connect.as_ref().is_some_and(|connect| {
+                            state.settle_connect(connect, ConnectOutcome::Failed(message.clone()))
+                        });
+                        if !reported && let Some(message) = message {
                             show_error_dialog(
                                 &state.overlay,
                                 &crate::i18n::tr("Unable to connect"),
@@ -1685,6 +1815,7 @@ impl ViewState {
             location.clone(),
             strategy,
             credentials,
+            None,
             move |state, result, attempted_credentials, prompt_details| {
                 if mount_result_is_ok(&result) {
                     state.browser.descend(parent_depth, location.clone());
@@ -1736,7 +1867,9 @@ impl ViewState {
                     state.abandon_deferred_reveal();
                     state.location_stack.set_visible_child_name("breadcrumbs");
                     state.restore_location_text();
-                    state.browser.focus_active();
+                    if !state.fail_pending_connect(None) {
+                        state.browser.focus_active();
+                    }
                 }
             },
         );
@@ -1821,6 +1954,7 @@ impl ViewState {
         location: Location,
         strategy: MountStrategy,
         credentials: Option<MountCredentials>,
+        cancellable: Option<gio::Cancellable>,
         on_result: impl Fn(
             &Rc<Self>,
             Result<(), glib::Error>,
@@ -1831,6 +1965,7 @@ impl ViewState {
         self.mount_target(
             MountTarget::Location(location, strategy),
             credentials,
+            cancellable,
             on_result,
         );
     }
@@ -2032,6 +2167,7 @@ impl ViewState {
         self: &Rc<Self>,
         target: MountTarget,
         credentials: Option<MountCredentials>,
+        cancellable: Option<gio::Cancellable>,
         on_result: impl Fn(
             &Rc<Self>,
             Result<(), glib::Error>,
@@ -2181,33 +2317,49 @@ impl ViewState {
         let result_overlay = self.overlay.clone();
         glib::MainContext::default().spawn_local(async move {
             let _activity = activity;
-            let result = match target {
-                MountTarget::Volume(volume) => {
-                    volume
-                        .mount_future(gio::MountMountFlags::NONE, Some(&operation))
-                        .await
-                }
-                MountTarget::Drive(drive) => {
-                    drive
-                        .start_future(gio::DriveStartFlags::NONE, Some(&operation))
-                        .await
-                }
-                MountTarget::Location(location, strategy) => {
-                    let file = gio_file_for_location(&location);
-                    match strategy {
-                        MountStrategy::EnclosingVolume => {
-                            file.mount_enclosing_volume_future(
-                                gio::MountMountFlags::NONE,
-                                Some(&operation),
-                            )
+            let mount = async {
+                match target {
+                    MountTarget::Volume(volume) => {
+                        volume
+                            .mount_future(gio::MountMountFlags::NONE, Some(&operation))
                             .await
+                    }
+                    MountTarget::Drive(drive) => {
+                        drive
+                            .start_future(gio::DriveStartFlags::NONE, Some(&operation))
+                            .await
+                    }
+                    MountTarget::Location(location, strategy) => {
+                        let file = gio_file_for_location(&location);
+                        match strategy {
+                            MountStrategy::EnclosingVolume => {
+                                file.mount_enclosing_volume_future(
+                                    gio::MountMountFlags::NONE,
+                                    Some(&operation),
+                                )
+                                .await
+                            }
+                            MountStrategy::Mountable => file
+                                .mount_mountable_future(
+                                    gio::MountMountFlags::NONE,
+                                    Some(&operation),
+                                )
+                                .await
+                                .map(|_| ()),
                         }
-                        MountStrategy::Mountable => file
-                            .mount_mountable_future(gio::MountMountFlags::NONE, Some(&operation))
-                            .await
-                            .map(|_| ()),
                     }
                 }
+            };
+            let result = match cancellable {
+                Some(cancellable) => gio::CancellableFuture::new(mount, cancellable)
+                    .await
+                    .unwrap_or_else(|gio::Cancelled| {
+                        Err(glib::Error::new(
+                            gio::IOErrorEnum::Cancelled,
+                            "Mount cancelled",
+                        ))
+                    }),
+                None => mount.await,
             };
             let result = trust_question_result(result, question_declined.get());
             if let Some(location) = log_location.as_ref() {

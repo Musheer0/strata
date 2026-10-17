@@ -99,6 +99,7 @@ impl ViewState {
                 if self.mode_views.borrow().mode() == BrowserMode::Columns {
                     self.append_column(*depth, location);
                 }
+                self.settle_connect_column(location);
             }
             BrowserEvent::ColumnsRelocated { from_depth } => {
                 if self
@@ -1038,11 +1039,13 @@ impl ViewState {
                     }
                     error => {
                         self.abandon_deferred_reveal();
-                        show_error_dialog(
-                            &self.overlay,
-                            &crate::i18n::tr("Unable to open location"),
-                            &error.message(),
-                        );
+                        if !self.fail_pending_connect(Some(error.message())) {
+                            show_error_dialog(
+                                &self.overlay,
+                                &crate::i18n::tr("Unable to open location"),
+                                &error.message(),
+                            );
+                        }
                     }
                 }
             }

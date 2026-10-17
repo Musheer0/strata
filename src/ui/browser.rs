@@ -13,7 +13,7 @@ use crate::ui::browser::columns::ColumnView;
 use crate::ui::browser::desktop::selected_terminal_location;
 use crate::ui::browser::inline_edit::{PendingEntryRename, PendingRename};
 use crate::ui::browser::location::{
-    MountCredentials, TypedLocation, UnlockProgressSlot, is_breadcrumb_button_target,
+    MountCredentials, PendingConnect, UnlockProgressSlot, is_breadcrumb_button_target,
 };
 use crate::ui::browser::paths::{can_pin_entry, is_trash_location};
 use crate::ui::browser::peek::{PeekAnchor, PeekView};
@@ -107,6 +107,7 @@ pub(super) use crate::ui::browser::inline_edit::{queue_rename, reveal_rename_row
 pub(in crate::ui) use crate::ui::browser::listing_filter::{
     FilterFocus, FilterStatus, results_step_target, scroll_results_to, selected_cursor,
 };
+pub(in crate::ui) use crate::ui::browser::location::ConnectOutcome;
 pub(super) use crate::ui::browser::pane_header::{
     column_sort_direction_toggle, column_sort_menu, empty_trash_button, pane_new_folder_button,
     pane_refresh_button, sync_column_sort_direction,
@@ -277,6 +278,7 @@ pub(super) struct ViewState {
     deferred_delete_empty_depth: Cell<Option<usize>>,
     pending_navigate: RefCell<Option<Location>>,
     pending_location_credentials: RefCell<Option<MountCredentials>>,
+    pending_connect: RefCell<Option<Rc<PendingConnect>>>,
     pending_trash_lookup: RefCell<Option<LoadHandle>>,
     pending_empty_trash: RefCell<Option<LoadHandle>>,
     trash_loading: RefCell<Option<TrashLoadingView>>,
@@ -663,6 +665,7 @@ impl BrowserView {
             deferred_delete_empty_depth: Cell::new(None),
             pending_navigate: RefCell::new(None),
             pending_location_credentials: RefCell::new(None),
+            pending_connect: RefCell::new(None),
             pending_trash_lookup: RefCell::new(None),
             pending_empty_trash: RefCell::new(None),
             trash_loading: RefCell::new(None),
@@ -1495,37 +1498,46 @@ impl BrowserView {
         self.state.cancel_location_edit();
     }
 
-    /// Opens a path or URI typed outside the location bar, returning the target
-    /// location so the caller can act once it loads. A relative path resolves
-    /// against the open native folder; errors are returned for the caller to
-    /// present.
-    pub(in crate::ui) fn typed_location(
-        &self,
-        input: &str,
-    ) -> Result<Location, LocationValidationError> {
-        let base = self
-            .state
-            .browser
-            .active_location()
-            .and_then(|location| location.native_path().map(std::path::Path::to_path_buf));
-        match self.state.open_typed_location(input, base.as_deref()) {
-            Ok(TypedLocation::Navigating { location })
-            | Ok(TypedLocation::Mounting { location, .. }) => Ok(location),
-            Err(error) => Err(error),
-        }
-    }
-
     /// Opens a path or URI typed outside the location bar. A relative path
     /// resolves against the open native folder; errors use the location bar's
     /// dialog and leave the current folder open.
     pub(in crate::ui) fn open_typed_location(&self, input: &str) {
-        if let Err(error) = self.typed_location(input) {
+        if let Err(error) = self
+            .state
+            .open_typed_location(input, self.typed_location_base().as_deref())
+        {
             show_error_dialog(
                 &self.state.overlay,
                 &crate::i18n::tr("Unable to open location"),
                 &error.to_string(),
             );
         }
+    }
+
+    /// Opens a typed path or URI for a dialog that stays up while it connects.
+    /// `finished` runs once, when the location opens or connecting fails, unless
+    /// [`Self::cancel_connect`] runs first. Invalid input is returned instead.
+    pub(in crate::ui) fn connect_typed_location(
+        &self,
+        input: &str,
+        finished: impl Fn(ConnectOutcome) + 'static,
+    ) -> Result<(), LocationValidationError> {
+        self.state.connect_typed_location(
+            input,
+            self.typed_location_base().as_deref(),
+            Box::new(finished),
+        )
+    }
+
+    pub(in crate::ui) fn cancel_connect(&self) {
+        self.state.cancel_connect();
+    }
+
+    fn typed_location_base(&self) -> Option<std::path::PathBuf> {
+        self.state
+            .browser
+            .active_location()
+            .and_then(|location| location.native_path().map(std::path::Path::to_path_buf))
     }
 
     pub fn set_peek_enabled(&self, enabled: bool) {

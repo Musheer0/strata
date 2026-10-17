@@ -404,6 +404,7 @@ impl Location {
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| path.to_string_lossy().into_owned()),
             LocationKind::Uri(uri) if uri.as_ref() == "trash:///" => crate::i18n::tr("Trash"),
+            LocationKind::Uri(uri) if uri.as_ref() == "network:///" => crate::i18n::tr("Network"),
             LocationKind::Uri(uri) => self
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())

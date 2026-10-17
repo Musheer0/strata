@@ -75,14 +75,16 @@ fn lexical_normalization_resolves_dot_segments_without_touching_the_filesystem()
 
 #[test]
 fn uri_locations_remain_explicit_and_have_one_breadcrumb() {
-    let trash = Location::uri("trash:///");
+    for (uri, name) in [("trash:///", "Trash"), ("network:///", "Network")] {
+        let location = Location::uri(uri);
 
-    assert_eq!(trash.native_path(), None);
-    assert_eq!(trash.uri_value(), Some("trash:///"));
-    assert_eq!(trash.display_name(), "Trash");
-    assert_eq!(trash.display_path(), "trash:///");
-    assert_eq!(trash.breadcrumbs(), vec![trash.clone()]);
-    assert_eq!(trash.parent(), None);
+        assert_eq!(location.native_path(), None, "{uri}");
+        assert_eq!(location.uri_value(), Some(uri));
+        assert_eq!(location.display_name(), name, "{uri}");
+        assert_eq!(location.display_path(), uri);
+        assert_eq!(location.breadcrumbs(), vec![location.clone()], "{uri}");
+        assert_eq!(location.parent(), None, "{uri}");
+    }
 }
 
 #[test]

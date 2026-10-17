@@ -550,17 +550,21 @@ pub(super) fn focus_button(button: &gtk::Button) {
 
 impl ModalLayout {
     pub fn set_loading(&self, loading: bool, description: Option<&str>) {
-        if loading {
-            let description =
-                description.map_or_else(|| crate::i18n::tr("Working…"), str::to_owned);
-            crate::ui::accessibility::set_description(&self.loading, Some(&description));
-            self.loading.set_visible(true);
-            self.loading.start();
-        } else {
-            self.loading.stop();
-            self.loading.set_visible(false);
-            crate::ui::accessibility::set_description(&self.loading, None);
-        }
+        set_modal_loading(&self.loading, loading, description);
+    }
+}
+
+/// [`ModalLayout::set_loading`] for a dialog that keeps only its spinner.
+pub(super) fn set_modal_loading(spinner: &gtk::Spinner, loading: bool, description: Option<&str>) {
+    if loading {
+        let description = description.map_or_else(|| crate::i18n::tr("Working…"), str::to_owned);
+        crate::ui::accessibility::set_description(spinner, Some(&description));
+        spinner.set_visible(true);
+        spinner.start();
+    } else {
+        spinner.stop();
+        spinner.set_visible(false);
+        crate::ui::accessibility::set_description(spinner, None);
     }
 }
 

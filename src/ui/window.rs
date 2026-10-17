@@ -1153,7 +1153,6 @@ pub(super) struct SidebarState {
     keycaps: RefCell<Vec<gtk::Label>>,
     keycaps_shown: Cell<bool>,
     visible_pins: RefCell<Vec<Location>>,
-    network_pin: Rc<RefCell<network_location::PinTracker>>,
     drop_feedback: Rc<sidebar_drop_feedback::SidebarDropFeedback>,
 }
 
@@ -1582,14 +1581,9 @@ impl SidebarState {
                     location.clone(),
                 );
                 self.add_keycap(&row, &place_keycap(super::keys::bindings::GO_HOME));
-                self.attach_place_context_menu(
-                    &row,
-                    location,
-                    |state| {
-                        state.preference_manager.set_sidebar_show_home(false);
-                    },
-                    None,
-                );
+                self.attach_place_context_menu(&row, location, |state| {
+                    state.preference_manager.set_sidebar_show_home(false);
+                });
                 self.make_place_reorderable(&row, place);
             }
             "trash" => {
@@ -1608,7 +1602,7 @@ impl SidebarState {
                     location.clone(),
                 );
                 self.add_keycap(&row, &place_keycap(super::keys::bindings::GO_NETWORK));
-                self.attach_place_context_menu(
+                self.attach_place_context_menu_with(
                     &row,
                     location,
                     |state| {
@@ -2254,23 +2248,18 @@ impl SidebarState {
         customize_sidebar_folder_icon(&row, &location, icon);
         crate::ui::accessibility::set_description(&row, Some(&location.display_path()));
         self.bind_place_row(&row, location.clone(), PlaceNavigation::Direct);
-        self.attach_place_context_menu(
-            &row,
-            location,
-            move |state| {
-                let manager = &state.preference_manager;
-                match id {
-                    "desktop" => manager.set_sidebar_show_desktop(false),
-                    "documents" => manager.set_sidebar_show_documents(false),
-                    "downloads" => manager.set_sidebar_show_downloads(false),
-                    "music" => manager.set_sidebar_show_music(false),
-                    "pictures" => manager.set_sidebar_show_pictures(false),
-                    "videos" => manager.set_sidebar_show_videos(false),
-                    _ => {}
-                }
-            },
-            None,
-        );
+        self.attach_place_context_menu(&row, location, move |state| {
+            let manager = &state.preference_manager;
+            match id {
+                "desktop" => manager.set_sidebar_show_desktop(false),
+                "documents" => manager.set_sidebar_show_documents(false),
+                "downloads" => manager.set_sidebar_show_downloads(false),
+                "music" => manager.set_sidebar_show_music(false),
+                "pictures" => manager.set_sidebar_show_pictures(false),
+                "videos" => manager.set_sidebar_show_videos(false),
+                _ => {}
+            }
+        });
 
         self.append_sidebar_row(&row);
         self.make_place_reorderable(&row, id);
@@ -2581,14 +2570,9 @@ impl SidebarState {
         row.add_css_class("sidebar-pinned-row");
         self.make_pinned_row_reorderable(&row, index);
         let unpinned_location = location.clone();
-        self.attach_place_context_menu(
-            &row,
-            location,
-            move |state| {
-                state.unpin_location(&unpinned_location);
-            },
-            None,
-        );
+        self.attach_place_context_menu(&row, location, move |state| {
+            state.unpin_location(&unpinned_location);
+        });
         row
     }
 
@@ -2624,6 +2608,16 @@ impl SidebarState {
     }
 
     fn attach_place_context_menu(
+        self: &Rc<Self>,
+        row: &gtk::Button,
+        location: Location,
+        on_unpin: impl Fn(&Rc<Self>) + 'static,
+    ) {
+        self.attach_place_context_menu_with(row, location, on_unpin, None);
+    }
+
+    /// Like [`Self::attach_place_context_menu`], with `extra` above the standard items.
+    fn attach_place_context_menu_with(
         self: &Rc<Self>,
         row: &gtk::Button,
         location: Location,
@@ -4087,14 +4081,12 @@ async fn trash_has_items(root: &gio::File) -> Result<bool, glib::Error> {
         .is_empty())
 }
 
-type PlaceMenuAction = Rc<dyn Fn(&Rc<SidebarState>)>;
-
 /// Extra context-menu action placed above the standard place items.
 struct PlaceMenuExtra {
     icon: &'static str,
     /// English message key, localized when the menu item is built.
     label: &'static str,
-    action: PlaceMenuAction,
+    action: fn(&Rc<SidebarState>),
 }
 
 fn sidebar_context_option(icon: &str, label: &str, danger: bool) -> gtk::Button {

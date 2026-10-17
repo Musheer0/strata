@@ -106,6 +106,146 @@ fn a_rejected_place_click_returns_the_highlight_to_the_open_location() {
     );
 }
 
+fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+    let mut widgets = vec![widget.clone()];
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        widgets.extend(descendants(&current));
+        child = current.next_sibling();
+    }
+    widgets
+}
+
+#[track_caller]
+fn find<T: IsA<gtk::Widget>>(root: &impl IsA<gtk::Widget>, matches: impl Fn(&T) -> bool) -> T {
+    descendants(root.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<T>().ok())
+        .find(|widget| matches(widget))
+        .expect("widget")
+}
+
+/// Unlike [`shows_label`], also matches inside a closed popover.
+fn find_label(root: &gtk::Widget, text: &str) -> bool {
+    descendants(root)
+        .iter()
+        .filter_map(|widget| widget.downcast_ref::<gtk::Label>())
+        .any(|label| label.label() == text)
+}
+
+fn modal_layers(overlay: &gtk::Overlay) -> usize {
+    descendants(overlay.upcast_ref())
+        .iter()
+        .filter(|widget| {
+            widget.has_css_class("app-modal-layer") && !widget.has_css_class("dismissing")
+        })
+        .count()
+}
+
+#[test]
+fn add_network_location_stays_open_until_connecting_ends_and_pins_only_on_success() {
+    // Without a GVfs backend an SMB share fails quickly and never reaches the network.
+    gtk_test_with_env(
+        "ui::window::tests::sidebar::add_network_location_stays_open_until_connecting_ends_and_pins_only_on_success",
+        [("GIO_USE_VFS", "local")],
+        || {
+            use super::super::load_pinned_places;
+            PreferenceManager::seed_saved_preferences_for_test();
+            let preferences = PreferenceManager::shared();
+            preferences.set_sidebar_show_network(true);
+            let view = browser_for_window();
+            let sidebar = build_sidebar(view.clone(), preferences, false);
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            content.append(&sidebar.widget);
+            content.append(&view.widget());
+            let overlay = gtk::Overlay::new();
+            overlay.set_child(Some(&content));
+            let window = gtk::Window::builder()
+                .child(&overlay)
+                .default_width(1000)
+                .default_height(600)
+                .build();
+            window.present();
+            let network = Location::uri("network:///");
+            let network_row = sidebar
+                .state
+                .place_rows
+                .borrow()
+                .iter()
+                .find(|(candidate, _)| *candidate == network)
+                .map(|(_, row)| row.clone())
+                .expect("Network row");
+            let pins_before = load_pinned_places().expect("bookmarks");
+
+            find::<gtk::Button>(&network_row, |button| {
+                button
+                    .child()
+                    .is_some_and(|child| find_label(&child, "Add network location…"))
+            })
+            .emit_clicked();
+            assert_eq!(modal_layers(&overlay), 1, "the dialog opens");
+            let address = find::<gtk::Entry>(&overlay, |entry| entry.has_css_class("form-control"));
+            let pin = find::<gtk::CheckButton>(&overlay, |_| true);
+            let connect = find::<gtk::Button>(&overlay, |button| {
+                button.has_css_class("action-dialog-confirm")
+            });
+            let spinner = find::<gtk::Spinner>(&overlay, |spinner| {
+                spinner.has_css_class("action-dialog-loading")
+            });
+            address.set_text("smb://unreachable.invalid/share");
+            pin.set_active(true);
+            connect.emit_clicked();
+
+            assert_eq!(
+                modal_layers(&overlay),
+                1,
+                "the dialog stays while connecting"
+            );
+            assert!(!connect.is_sensitive() && !address.is_sensitive() && !pin.is_sensitive());
+            assert!(spinner.is_visible() && spinner.is_spinning());
+
+            wait_until(|| connect.is_sensitive(), "connecting to fail");
+            assert_eq!(
+                modal_layers(&overlay),
+                1,
+                "the failure is shown in the dialog, not a second one"
+            );
+            assert!(address.is_sensitive() && pin.is_sensitive());
+            assert!(!spinner.is_visible());
+            assert!(address.has_css_class("error"));
+            let error =
+                find::<gtk::Label>(&overlay, |label| label.has_css_class("form-field-error"));
+            assert!(error.is_visible() && !error.text().is_empty());
+            assert_eq!(load_pinned_places().expect("bookmarks"), pins_before);
+            assert_ne!(
+                view.browser().active_location(),
+                Some(Location::uri("smb://unreachable.invalid/share"))
+            );
+
+            let folder = tempfile::tempdir().expect("folder to connect to");
+            let opened = Location::local(folder.path());
+            address.set_text(&folder.path().to_string_lossy());
+            connect.emit_clicked();
+            assert_eq!(
+                modal_layers(&overlay),
+                0,
+                "the dialog closes once the location opens"
+            );
+            assert_eq!(view.browser().active_location(), Some(opened.clone()));
+            assert!(
+                load_pinned_places()
+                    .expect("bookmarks")
+                    .iter()
+                    .any(|(location, _)| *location == opened),
+                "the retried location is pinned"
+            );
+            view.browser().clear_observer();
+            sidebar.disconnect();
+            window.destroy();
+        },
+    );
+}
+
 #[test]
 fn sidebar_reorders_only_distinct_rows_in_the_same_section() {
     for (source, target, accepts) in [
